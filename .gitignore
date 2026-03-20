@@ -1,0 +1,27 @@
+# Scripts (cluster-specific, each user creates their own)
+scripts/*
+!scripts/README.md
+
+# Symlinked data directory (created by setup_node.sh)
+/poke_env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# uv
+uv.lock
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
