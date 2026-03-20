@@ -1,6 +1,7 @@
 # Scripts (cluster-specific, each user creates their own)
 scripts/*
 !scripts/README.md
+!scripts/CLUSTER.md
 
 # Symlinked data directory (created by setup_node.sh)
 /poke_env
