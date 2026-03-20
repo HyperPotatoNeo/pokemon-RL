@@ -14,13 +14,21 @@ source .venv/bin/activate && python -m pytest ...
 # NEVER use system python, conda envs, or other venvs
 ```
 
-## Architecture (4 Layers)
+## Architecture: Two Harnesses
+
+**BattleManager** = general battle harness. Knows Pokemon, players, turns, game state.
+Does NOT know about LLMs, prompts, tokens, or rewards. Non-LLM agents (RL policy
+networks, heuristics, metamon) use this directly.
+
+**PokemonBattleEnv** = LLM harness on top. Translates battle state → text prompts,
+parses text → actions, assigns rewards. Any LLM-in-the-loop use goes through here,
+whether for RL training (verifiers), eval, data collection, or human text play.
 
 ```
-Layer 4: PokemonBattleEnv  — MultiTurnEnv hooks (verifiers interface)
+Layer 4: PokemonBattleEnv  — LLM harness (verifiers hooks, prompts, rewards)
 Layer 3: StateTranslator   — Battle state <-> LLM text (pokechamp format)
-Layer 2: BattleAdapter     — Full-battle mode (callback-driven)
-         BattleManager     — Turn-by-turn mode (imperative control)
+Layer 2: BattleManager     — General battle harness (turn-by-turn control)
+         BattleAdapter     — Full-battle mode (callback-driven, legacy)
          ControllablePlayer — Queue-based external control
 Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 ```
