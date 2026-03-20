@@ -1,49 +1,48 @@
 # TODO
 
-## Current: High-Level Skeleton
+## Done: High-Level Skeleton
 
 - [x] Project structure + pyproject.toml
 - [x] Layer 1: ShowdownEngine (start/stop/health_check)
 - [x] Layer 2: BattleAdapter (full-battle mode with callback player)
 - [x] Layer 3: StateTranslator (simple + pokechamp_io formats)
 - [x] Layer 4: PokemonBattleEnv (MultiTurnEnv skeleton)
-- [x] Unit tests (no external deps)
-- [x] Integration tests (Showdown + poke-env)
-- [x] Scripts (allocate, setup, run_tests)
-- [ ] Run unit tests on login node
-- [ ] Run integration tests on compute node
-- [ ] Fix any issues found during testing
+- [x] Unit tests + integration tests (37 total)
 
-## Next: Turn-by-Turn Control (Layer 2)
+## Done: Turn-by-Turn Control + Self-Play
 
-- [ ] ControllablePlayer (choose_move blocks until external action)
-- [ ] BattleAdapter.start_battle() / submit_actions() / get_winner()
-- [ ] Thread-safe bridge between poke-env event loop and env hooks
-- [ ] Tests for turn-by-turn control
+- [x] ControllablePlayer (queue-based external control)
+- [x] BattleManager (heuristic + selfplay modes)
+- [x] Self-play with force-switch handling (sequential API)
+- [x] Enhanced PokemonBattleEnv (full_battle + turn_by_turn modes)
+- [x] Opponent factory (random, max_damage, callback, controllable)
+- [x] TrajectoryLogger (JSONL battle data collection)
+- [x] No-fall-through test suite (84 total: 61 unit + 23 integration)
 
 ## Next: Verifiers Integration (Layer 4)
 
 - [ ] Inherit from vf.MultiTurnEnv
 - [ ] Integrate with prime-rl orchestrator
-- [ ] branching trajectory strategy
-- [ ] Passthrough rubric
+- [ ] Branching trajectory strategy
+- [ ] Passthrough rubric (score_rollouts=True)
 - [ ] load_environment() discovery
+- [ ] Per-step GRPO advantage computation
 - [ ] Tests with mock vLLM client
 
-## Next: Self-Play Mode
+## Next: GPU Smoke Tests
 
-- [ ] Two ControllablePlayers per battle
-- [ ] Alternating trajectory steps (P1/P2)
-- [ ] Both players' trajectories captured
-- [ ] Simultaneous action resolution
-- [ ] Per-player reward assignment
+- [ ] run_selfplay.sh: LLM self-play on GPU node via vLLM
+- [ ] run_crossnode.sh: cross-node battle (2 GPU nodes)
+- [ ] LLM vs heuristic (vLLM + Showdown)
 
 ## Future
 
 - [ ] Opponent curriculum (heuristic → self-play → frozen checkpoint)
-- [ ] Shaped rewards (damage, pokemon fainted)
+- [ ] Shaped rewards (damage dealt, pokemon fainted)
 - [ ] Team pool / format selection
 - [ ] Elo tracking
 - [ ] Multi-node deployment scripts
 - [ ] pokechamp_io format for all generations
 - [ ] Replay logging for analysis
+- [ ] Human player interface (websocket or terminal)
+- [ ] Online tournament connection (PokéAgent challenge)

@@ -1,5 +1,44 @@
 # Progress
 
+## 2026-03-20: Turn-by-turn control + self-play — 84 tests passing
+
+### Done
+- **ControllablePlayer** (`players.py`): Queue-based Player that blocks choose_move
+  until external action is provided. Uses asyncio.Queue on POKE_LOOP with 300s timeout
+  fallback. Game-over sentinel via `_battle_finished_callback` hook.
+- **BattleManager** (`battle.py`): Turn-by-turn orchestration bridging caller's event
+  loop and poke-env's POKE_LOOP. Heuristic mode: start → step → step → get_result.
+  Self-play mode: sequential API handling force-switch asymmetry via thread-safe relay queue.
+- **Self-play**: Two ControllablePlayers, relay tasks forward states to shared queue.
+  `get_pending_selfplay_states()` handles normal turns (2 states) and force-switches (1 state).
+  Opposite reward assignment (P1 wins → P1=1.0, P2=0.0).
+- **Enhanced PokemonBattleEnv** (`env.py`): Two control modes (full_battle, turn_by_turn),
+  two opponent modes (heuristic, self_play). `run_turn_by_turn()` for testing without LLM.
+- **TrajectoryLogger** (`data.py`): Append-only JSONL writer for battle data collection.
+- **Opponent factory** (`players.py`): random, max_damage, callback, controllable types.
+- **84 tests (61 unit + 23 integration), all passing:**
+  - Queue mechanics, state machine guards, sentinel detection, timeout behavior
+  - Reward correctness (win≠loss), selfplay opposite rewards, force-switch handling
+  - Full game lifecycle: heuristic + selfplay modes, concurrent battles, trajectory integrity
+
+### Key decisions
+- **Thread-safe relay queue for self-play**: asyncio.Queue lives on POKE_LOOP but callers
+  are on a different loop. Used threading.Queue as relay — POKE_LOOP tasks write,
+  caller reads via run_in_executor. Avoids cross-loop deadlocks.
+- **Sequential selfplay API**: `get_pending_selfplay_states()` instead of symmetric
+  `step_selfplay(p1, p2)`. Force-switches only affect one player — symmetric API
+  deadlocks when gather(get_p1, get_p2) but only p1 has a state.
+- **Atomic username counter**: `itertools.count()` instead of timestamp-based names.
+  Prevents collisions when creating 64+ concurrent players in the same millisecond.
+- **No fall-through tests**: Every test verifies both positive AND negative cases.
+  Wrong inputs produce different results than correct ones.
+
+### Bug fixed
+- **Self-play deadlock**: Original design used `asyncio.gather` to collect both players'
+  states simultaneously. When a pokemon faints, only that player gets choose_move —
+  the other player's get() hangs forever. Fixed with sequential state collection and
+  thread-safe relay queue.
+
 ## 2026-03-19: Initial skeleton — all tests passing
 
 ### Done

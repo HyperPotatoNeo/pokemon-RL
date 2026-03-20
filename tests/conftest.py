@@ -3,6 +3,7 @@
 Test categories:
     @pytest.mark.unit         — No external deps. Runs anywhere.
     @pytest.mark.integration  — Needs Showdown server + poke-env (compute node).
+    @pytest.mark.gpu          — Needs GPU + vLLM (compute node with GPU).
 
 Dependencies (poke-env, pokechamp) are installed via the project venv.
 See scripts/setup_node.sh for setup instructions.

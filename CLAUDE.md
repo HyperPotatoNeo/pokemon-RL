@@ -2,12 +2,26 @@
 
 Pokemon Showdown multi-agent RL environment for prime-rl.
 
+## IMPORTANT: Always use the project .venv
+
+```bash
+# On login node:
+.venv/bin/python -m pytest ...
+
+# On compute node (inside container):
+source .venv/bin/activate && python -m pytest ...
+
+# NEVER use system python, conda envs, or other venvs
+```
+
 ## Architecture (4 Layers)
 
 ```
-Layer 4: PokemonBattleEnv  — MultiTurnEnv skeleton (verifiers interface)
+Layer 4: PokemonBattleEnv  — MultiTurnEnv hooks (verifiers interface)
 Layer 3: StateTranslator   — Battle state <-> LLM text (pokechamp format)
-Layer 2: BattleAdapter     — Bridges poke-env into imperative control
+Layer 2: BattleAdapter     — Full-battle mode (callback-driven)
+         BattleManager     — Turn-by-turn mode (imperative control)
+         ControllablePlayer — Queue-based external control
 Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 ```
 
@@ -16,9 +30,12 @@ Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 | File | Purpose |
 |------|---------|
 | `src/pokemon_rl/engine.py` | ShowdownEngine: start/stop/health_check |
-| `src/pokemon_rl/adapter.py` | BattleAdapter + CallbackPlayer |
+| `src/pokemon_rl/adapter.py` | BattleAdapter + CallbackPlayer (full-battle mode) |
+| `src/pokemon_rl/players.py` | ControllablePlayer + opponent factory |
+| `src/pokemon_rl/battle.py` | BattleManager (turn-by-turn orchestration) |
 | `src/pokemon_rl/translator.py` | StateTranslator (simple + pokechamp_io) |
 | `src/pokemon_rl/env.py` | PokemonBattleEnv (MultiTurnEnv hooks) |
+| `src/pokemon_rl/data.py` | TrajectoryLogger (JSONL battle logging) |
 | `tests/conftest.py` | Fixtures, capability detection, skip markers |
 | `scripts/` | Cluster-specific (gitignored, see scripts/README.md) |
 
@@ -38,14 +55,18 @@ uv pip install -e ".[test]"            # our package
 
 - `@pytest.mark.unit` — No external deps. Runs anywhere with the venv active.
 - `@pytest.mark.integration` — Needs Showdown server + poke-env.
+- `@pytest.mark.gpu` — Needs GPU + vLLM (compute node with GPU).
 
 ## Running Tests
 
 ```bash
-# On compute node with container:
-bash scripts/run_tests.sh -m unit         # Unit tests
-bash scripts/run_tests.sh -m integration  # Integration tests
-bash scripts/run_tests.sh                 # All tests
+# On login node (unit tests only):
+.venv/bin/python -m pytest -m unit -v
+
+# On compute node via SSH:
+bash scripts/run_tests_remote.sh nid008268 -m unit -v
+bash scripts/run_tests_remote.sh nid008268 -m integration -v
+bash scripts/run_tests_remote.sh nid008268 -v  # all tests
 ```
 
 ## Current Status
