@@ -417,3 +417,25 @@ class TestControllablePlayerIntegration:
         )
         with pytest.raises(ValueError, match="callback"):
             create_opponent("callback", "gen1randombattle", server_config)
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_opponent_factory_controllable_has_queues(self, showdown_port):
+        """create_opponent('controllable') returns player with queue attrs."""
+        from pokemon_rl.players import create_opponent
+        from poke_env.ps_client.server_configuration import ServerConfiguration
+
+        server_config = ServerConfiguration(
+            f"localhost:{showdown_port}",
+            "https://play.pokemonshowdown.com/action.php?",
+        )
+        player = create_opponent(
+            "controllable", "gen1randombattle", server_config
+        )
+
+        assert hasattr(player, "state_queue"), "Missing state_queue"
+        assert hasattr(player, "action_queue"), "Missing action_queue"
+        assert hasattr(player, "finished_event"), "Missing finished_event"
+        assert player.state_queue.empty(), "state_queue should start empty"
+        assert player.action_queue.empty(), "action_queue should start empty"
+        assert not player.finished_event.is_set(), "finished_event should start unset"

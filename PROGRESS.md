@@ -1,5 +1,37 @@
 # Progress
 
+## 2026-03-20: Adversarial review + selfplay hooks fixes — 120 tests passing
+
+### Done
+- **Adversarial code review**: Found 6 bugs in the selfplay hooks path (verifiers integration).
+- **5 fixes in `env.py`**:
+  - `setup_state` selfplay: unpacked `(idx, battle)` tuples into bare Battle objects
+  - `setup_state` selfplay: None check now inspects actual battle values, not tuples
+  - `_advance_selfplay`: buffers pending states, calls `get_pending` only after ALL
+    buffered actions submitted (prevents deadlock when hooks submit one action at a time)
+  - `render_completion` selfplay: `won=None` gives symmetric 0.0 to both players
+  - `_run_selfplay_standalone`: same `won=None` fix applied to standalone path
+- **2 fixes in `battle.py`**:
+  - `get_pending_selfplay_states`: deprecated `get_event_loop()` → `get_running_loop()`
+  - Sentinel in grace window: valid state no longer discarded when second item is None
+- **Stale comments cleaned**: adapter.py "planned" → documented as implemented in battle.py
+- **37 new tests (120 total: 93 unit + 27 integration):**
+  - `test_hooks.py` (24 unit): StrictMockSelfplayManager enforces BattleManager contract,
+    full hooks cycle for both heuristic and selfplay, setup_state type verification,
+    standalone selfplay contract validation
+  - `test_env.py` (+5): render_completion edge cases (won=None, empty trajectory),
+    hooks heuristic integration, trajectory monotonicity
+  - `test_battle.py` (+4): result schema, sentinel handling, concurrent selfplay
+  - `test_translator.py` (+3): nested JSON, extra keys, empty moves
+  - `test_players.py` (+1): controllable factory queue attributes
+
+### Key design: selfplay hooks buffering
+The MultiTurnEnv hooks model calls add_trajectory_step once per LLM response (one player
+at a time). But selfplay needs ALL pending actions before Showdown resolves the turn.
+Solution: `_advance_selfplay` maintains `_pending_states` buffer. After P1 acts, it pops
+P2 from the buffer and sets P2 as current_player. Only after P2 also acts (buffer empty)
+does it call `get_pending_selfplay_states()` for the next turn.
+
 ## 2026-03-20: Turn-by-turn control + self-play — 84 tests passing
 
 ### Done

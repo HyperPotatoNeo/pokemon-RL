@@ -144,6 +144,52 @@ class TestParseAction:
         assert order is not None
         assert order.dynamax is True
 
+    @pytest.mark.unit
+    def test_parse_nested_json_matches_inner(self):
+        """Nested JSON: regex matches inner object, not outer.
+
+        Documents a known limitation of the flat JSON regex r"\\{[^{}]*\\}".
+        If the LLM nests objects, the inner one is matched instead.
+        """
+        from pokemon_rl.translator import StateTranslator
+
+        battle = MockBattle(moves=[make_move("thunderbolt")])
+        translator = StateTranslator(format_style="simple")
+
+        response = '{"move": "thunderbolt", "reasoning": {"step": 1}}'
+        order = translator.parse_action(response, battle)
+
+        # The regex can't match the outer object (contains inner braces).
+        # It matches {"step": 1} which has no "move" key → returns None.
+        assert order is None, (
+            "Nested JSON should fail because the flat regex matches the "
+            "inner object. If this passes, the regex was improved."
+        )
+
+    @pytest.mark.unit
+    def test_parse_extra_keys_no_interference(self):
+        """JSON with extra unknown keys should still match move/switch."""
+        from pokemon_rl.translator import StateTranslator
+
+        battle = MockBattle(moves=[make_move("thunderbolt")])
+        translator = StateTranslator(format_style="simple")
+
+        response = '{"reasoning": "water is weak to electric", "move": "thunderbolt"}'
+        order = translator.parse_action(response, battle)
+        assert order is not None, "Extra keys should not prevent move matching"
+        assert "thunderbolt" in order.message
+
+    @pytest.mark.unit
+    def test_parse_no_available_moves_returns_none(self):
+        """Parsed move not in available_moves → None."""
+        from pokemon_rl.translator import StateTranslator
+
+        battle = MockBattle(moves=[])  # no available moves
+        translator = StateTranslator(format_style="simple")
+
+        order = translator.parse_action('{"move": "thunderbolt"}', battle)
+        assert order is None, "Should return None when move not in available_moves"
+
 
 class TestFallbackAction:
     @pytest.mark.unit

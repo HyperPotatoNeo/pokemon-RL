@@ -113,6 +113,67 @@ class TestBattleManagerStateMachine:
         with pytest.raises(RuntimeError, match="already finished"):
             await mgr.step(None)
 
+    @pytest.mark.unit
+    def test_get_result_schema_all_fields(self):
+        """Result dict must have all expected fields with correct types."""
+        from unittest.mock import MagicMock
+        from pokemon_rl.battle import BattleManager
+
+        mgr = BattleManager(port=9999, battle_format="gen1randombattle")
+        mgr._started = True
+        mgr._finished = True
+        mgr._selfplay = False
+
+        # Mock the player (get_result accesses _player.result_battle)
+        mock_player = MagicMock()
+        mock_player.result_battle = None
+        mock_player.battles = {}
+        mgr._player = mock_player
+
+        result = mgr.get_result()
+
+        required_fields = {"won", "turns", "steps", "format", "battle_tag", "selfplay"}
+        actual_fields = set(result.keys())
+        missing = required_fields - actual_fields
+        assert not missing, f"Result missing fields: {missing}"
+        assert result["format"] == "gen1randombattle"
+        assert result["selfplay"] is False
+        assert isinstance(result["steps"], int)
+        assert isinstance(result["turns"], int)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_selfplay_sentinel_in_grace_window_keeps_valid(self):
+        """Valid state not discarded when sentinel arrives in grace window.
+
+        When get_pending reads a valid state, then a None sentinel arrives
+        within 0.5s, the valid state should still be returned.
+
+        BUG: Current code returns [] when sentinel found in grace window,
+        discarding the already-collected valid state.
+        """
+        import queue as thread_queue
+        from pokemon_rl.battle import BattleManager
+
+        mgr = BattleManager(port=9999)
+        mgr._started = True
+        mgr._selfplay = True
+        mgr._finished = False
+        mgr._selfplay_relay = thread_queue.Queue()
+
+        # Simulate: valid state, then sentinel in quick succession
+        mgr._selfplay_relay.put((0, "valid_battle"))
+        mgr._selfplay_relay.put((1, None))
+
+        result = await mgr.get_pending_selfplay_states()
+
+        assert len(result) >= 1, (
+            f"Expected at least 1 state (the valid one), got {len(result)}. "
+            f"The valid state was consumed from the relay queue but discarded "
+            f"when the sentinel was found in the grace window."
+        )
+        assert result[0] == (0, "valid_battle")
+
 
 # ---- Integration tests: real Showdown ----
 
@@ -346,3 +407,44 @@ class TestBattleManagerIntegration:
             battle, done = await mgr.step(action)
             if done:
                 break
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_concurrent_selfplay_battles(self, showdown_port):
+        """Multiple selfplay battles concurrently — no cross-contamination.
+
+        Each battle should have unique tags and independent outcomes.
+        """
+        from pokemon_rl.battle import BattleManager
+        from poke_env.player.battle_order import BattleOrder
+
+        async def play_selfplay(port):
+            mgr = BattleManager(port=port, battle_format="gen1randombattle")
+            pending = await mgr.start_battle_selfplay()
+            steps = 0
+            while pending and steps < 600:
+                for idx, state in pending:
+                    if state.available_moves:
+                        action = BattleOrder(state.available_moves[0])
+                    elif state.available_switches:
+                        action = BattleOrder(state.available_switches[0])
+                    else:
+                        action = None
+                    await mgr.submit_selfplay_action(idx, action)
+                    steps += 1
+                pending = await mgr.get_pending_selfplay_states()
+            return mgr.get_result()
+
+        results = await asyncio.gather(
+            play_selfplay(showdown_port),
+            play_selfplay(showdown_port),
+        )
+
+        assert len(results) == 2
+        tags = [r["battle_tag"] for r in results]
+        assert tags[0] != tags[1], f"Tags should differ: {tags}"
+
+        for i, r in enumerate(results):
+            assert r["won"] in (True, False), f"Game {i}: expected bool won"
+            assert r["selfplay"] is True
+            assert r["steps"] > 0, f"Game {i}: should have steps"

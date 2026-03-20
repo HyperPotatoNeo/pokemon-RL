@@ -130,11 +130,13 @@ class PokemonBattleEnv:
             state["manager"] = manager
 
             if self.opponent_mode == "self_play":
-                s1, s2 = await manager.start_battle_selfplay()
-                state["battles"] = [s1, s2]
-                state["current_player"] = 0
-                state["battle"] = s1  # first prompt is for P1
-                if s1 is None or s2 is None:
+                pending = await manager.start_battle_selfplay()
+                # pending is [(idx, battle), ...] — unpack tuples
+                state["_pending_states"] = list(pending)
+                state["current_player"] = pending[0][0] if pending else 0
+                state["battle"] = pending[0][1] if pending else None
+                # Check if any battle is None (failed start)
+                if not pending or any(b is None for _, b in pending):
                     state["game_over"] = True
             else:
                 battle = await manager.start_battle(
@@ -229,38 +231,52 @@ class PokemonBattleEnv:
     ) -> None:
         """Handle self-play turn advancement using sequential API.
 
-        Submits the action immediately, then checks for pending states.
-        This naturally handles force-switches (only affected player
-        gets a new state) and normal turns (both players get states).
+        The hooks model calls add_trajectory_step once per LLM response,
+        but self-play needs ALL pending actions submitted before the turn
+        resolves. This method buffers pending states and only calls
+        get_pending_selfplay_states after the last buffered action.
+
+        Flow for a normal turn with 2 pending states:
+            1. Hook call #1: P1's action → submit, pop P2 from buffer
+            2. Hook call #2: P2's action → submit, buffer empty → get_pending
+            3. New pending states arrive for next turn
         """
         manager = state["manager"]
+        pending = state.get("_pending_states", [])
 
         # Submit action for current player
         await manager.submit_selfplay_action(player_idx, action)
 
-        # Check for pending states
-        pending = await manager.get_pending_selfplay_states()
+        # Remove the current player's entry from the pending buffer
+        pending = [(idx, b) for idx, b in pending if idx != player_idx]
 
-        if not pending:
-            # Game over
-            state["game_over"] = True
-            result = manager.get_result()
-            state["won"] = result["won"]
-            return
-
-        # Set next player's state for the env to generate a prompt for
-        next_idx, next_battle = pending[0]
-        state["current_player"] = next_idx
-        state["battle"] = next_battle
-
-        # If there are two pending states, store both
-        if len(pending) == 2:
+        if pending:
+            # More players need to act before the turn resolves.
+            # Set the next buffered player's state for the next prompt.
+            next_idx, next_battle = pending[0]
+            state["current_player"] = next_idx
+            state["battle"] = next_battle
             state["_pending_states"] = pending
+            if next_battle is not None:
+                state["turn"] = next_battle.turn
         else:
-            state["_pending_states"] = pending
+            # All buffered actions submitted — now ask BattleManager for
+            # the next turn's states (this is when Showdown resolves).
+            new_pending = await manager.get_pending_selfplay_states()
 
-        if next_battle is not None:
-            state["turn"] = next_battle.turn
+            if not new_pending:
+                state["game_over"] = True
+                result = manager.get_result()
+                state["won"] = result["won"]
+                state["_pending_states"] = []
+                return
+
+            next_idx, next_battle = new_pending[0]
+            state["current_player"] = next_idx
+            state["battle"] = next_battle
+            state["_pending_states"] = list(new_pending)
+            if next_battle is not None:
+                state["turn"] = next_battle.turn
 
     async def render_completion(self, state: dict) -> None:
         """Assign terminal rewards to all trajectory steps.
@@ -275,11 +291,14 @@ class PokemonBattleEnv:
 
         for step in state["trajectory"]:
             if self.opponent_mode == "self_play":
-                # P1 wins → P1 reward=1.0, P2 reward=0.0
-                # P1 loses → P1 reward=0.0, P2 reward=1.0
-                if step["player_idx"] == 0:
+                if won is None:
+                    # Draw/crash/timeout: both players get 0.0
+                    step["reward"] = 0.0
+                elif step["player_idx"] == 0:
+                    # P1 wins → 1.0, P1 loses → 0.0
                     step["reward"] = reward
                 else:
+                    # P2 gets the opposite of P1
                     step["reward"] = 1.0 - reward
             else:
                 step["reward"] = reward
@@ -475,7 +494,10 @@ class PokemonBattleEnv:
         reward = 1.0 if won else 0.0
 
         for step in trajectory:
-            if step["player_idx"] == 0:
+            if won is None:
+                # Draw/crash/timeout: both players get 0.0
+                step["reward"] = 0.0
+            elif step["player_idx"] == 0:
                 step["reward"] = reward
             else:
                 step["reward"] = 1.0 - reward

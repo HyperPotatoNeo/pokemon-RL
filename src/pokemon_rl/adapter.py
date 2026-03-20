@@ -1,10 +1,8 @@
-"""Layer 2: Battle adapter — bridges poke-env into imperative control.
+"""Layer 2: Battle adapter — full-battle mode via poke-env callbacks.
 
-Provides two modes:
-1. Full-battle mode (implemented): Runs a complete battle via poke-env's
-   battle_against(), capturing the trajectory through a callback player.
-2. Turn-by-turn mode (planned): External control of each turn for
-   verifiers MultiTurnEnv integration.
+Runs a complete battle via poke-env's battle_against(), capturing the
+trajectory through a callback player. For turn-by-turn control, see
+BattleManager in battle.py.
 
 Dependencies: poke-env (via pokechamp's PYTHONPATH)
 
@@ -228,19 +226,5 @@ class BattleAdapter:
             "battle_tag": battle.battle_tag,
         }
 
-    # -----------------------------------------------------------------
-    # Turn-by-turn control (planned for verifiers MultiTurnEnv integration)
-    # -----------------------------------------------------------------
-    # The following methods define the interface for fine-grained control.
-    # Implementation requires a ControllablePlayer that bridges poke-env's
-    # callback-driven choose_move() into an imperative get_state/submit_action
-    # pattern using threading Events.
-    #
-    # async def start_battle(self, team1, team2) -> tuple[state1, state2]:
-    #     """Start a battle, return initial states for both players."""
-    #
-    # async def submit_actions(self, p1_action, p2_action) -> tuple[s1, s2, done]:
-    #     """Submit both players' actions, resolve turn, return new states."""
-    #
-    # def get_winner(self) -> int:
-    #     """Return winner (0 or 1)."""
+    # Turn-by-turn control is implemented in BattleManager (battle.py).
+    # BattleAdapter handles full-battle (callback-driven) mode only.

@@ -302,6 +302,65 @@ class TestEnvStateMachine:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
+    async def test_render_completion_won_none_metric_negative_one(self):
+        """won=None (draw/crash) → metrics['won'] must be -1, not 0."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+        state = {
+            "won": None, "turn": 5, "decision_count": 5,
+            "trajectory": [{"player_idx": 0}],
+        }
+        await env.render_completion(state)
+
+        assert state["metrics"]["won"] == -1, (
+            f"won=None should give metrics['won']=-1, got {state['metrics']['won']}"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_render_completion_won_none_differs_from_loss(self):
+        """won=None and won=False must be distinguishable in metrics."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+
+        none_state = {
+            "won": None, "turn": 5, "decision_count": 5,
+            "trajectory": [{"player_idx": 0}],
+        }
+        loss_state = {
+            "won": False, "turn": 5, "decision_count": 5,
+            "trajectory": [{"player_idx": 0}],
+        }
+
+        await env.render_completion(none_state)
+        await env.render_completion(loss_state)
+
+        assert none_state["metrics"]["won"] != loss_state["metrics"]["won"], (
+            f"won=None ({none_state['metrics']['won']}) and won=False "
+            f"({loss_state['metrics']['won']}) must be distinguishable"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_render_completion_empty_trajectory_no_crash(self):
+        """Empty trajectory must not crash render_completion."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+        state = {
+            "won": True, "turn": 0, "decision_count": 0,
+            "trajectory": [],
+        }
+
+        await env.render_completion(state)
+
+        assert state["reward"] == 1.0
+        assert state["metrics"]["trajectory_length"] == 0
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
     async def test_run_standalone_without_adapter_raises(self):
         """run_standalone with no adapter must raise RuntimeError."""
         from pokemon_rl.env import PokemonBattleEnv
@@ -530,3 +589,83 @@ class TestEnvIntegration:
             assert step["action"].startswith("/choose") or step["action"].startswith("/"), (
                 f"Step {i} action doesn't look like a poke-env command: {step['action']}"
             )
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_turn_by_turn_trajectory_turns_monotonic(self, showdown_port):
+        """Turn numbers must be monotonically non-decreasing.
+
+        Force-switches can repeat the same turn number (they don't advance
+        the game turn), but turns must never go backwards.
+        """
+        from pokemon_rl.translator import StateTranslator
+        from pokemon_rl.env import PokemonBattleEnv
+
+        translator = StateTranslator(format_style="simple")
+        env = PokemonBattleEnv(
+            translator=translator,
+            control_mode="turn_by_turn",
+            port=showdown_port,
+            battle_format="gen1randombattle",
+        )
+
+        result = await env.run_turn_by_turn()
+
+        turns = [s["turn"] for s in result["trajectory"]]
+        for i in range(1, len(turns)):
+            assert turns[i] >= turns[i - 1], (
+                f"Turn sequence not monotonic at index {i}: ...{turns[max(0,i-2):i+2]}..."
+            )
+        assert all(t >= 1 for t in turns), f"All turns should be >= 1, got: {turns}"
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_hooks_heuristic_integration(self, showdown_port):
+        """Full hooks cycle with real Showdown (not the run_turn_by_turn shortcut).
+
+        Tests the ACTUAL path that verifiers will use:
+        setup_state → (get_prompt → add_step) × N → render_completion.
+        """
+        from pokemon_rl.translator import StateTranslator
+        from pokemon_rl.env import PokemonBattleEnv
+
+        translator = StateTranslator(format_style="simple")
+        env = PokemonBattleEnv(
+            translator=translator,
+            control_mode="turn_by_turn",
+            port=showdown_port,
+            battle_format="gen1randombattle",
+            opponent_type="random",
+        )
+
+        state = await env.setup_state({})
+
+        assert state["manager"] is not None
+        assert state["battle"] is not None
+        assert state["game_over"] is False
+
+        step_count = 0
+        while not state["game_over"] and step_count < 300:
+            prompt = await env.get_prompt_messages(state)
+            if prompt is None:
+                break
+            assert len(prompt) == 2
+            assert prompt[0]["role"] == "system"
+
+            # Garbage completion → triggers fallback action
+            step = {"completion": '{"move": "nonexistent"}'}
+            await env.add_trajectory_step(state, step)
+            step_count += 1
+
+        await env.render_completion(state)
+
+        assert step_count > 0, "Game should have at least 1 step"
+        assert state["reward"] in (0.0, 1.0)
+        assert len(state["trajectory"]) == step_count
+
+        for i, s in enumerate(state["trajectory"]):
+            assert "player_idx" in s, f"Step {i}: missing player_idx"
+            assert "parsed_action" in s, f"Step {i}: missing parsed_action"
+            assert "force_switch" in s, f"Step {i}: missing force_switch"
+            assert "reward" in s, f"Step {i}: missing reward"
+            assert s["player_idx"] == 0, f"Step {i}: heuristic = player 0"

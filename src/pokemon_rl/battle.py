@@ -299,7 +299,7 @@ class BattleManager:
 
         # Wait for at least one state (blocking with a long timeout)
         try:
-            first = await asyncio.get_event_loop().run_in_executor(
+            first = await asyncio.get_running_loop().run_in_executor(
                 None, lambda: relay.get(timeout=300)
             )
         except thread_queue.Empty:
@@ -319,8 +319,10 @@ class BattleManager:
             second = relay.get(timeout=0.5)
             idx2, state2 = second
             if state2 is None:
+                # Game ending — but return the valid state we already have.
+                # The caller can process it; next call will return [].
                 self._finished = True
-                return []
+                return results
             results.append((idx2, state2))
         except thread_queue.Empty:
             pass  # Only one state pending (force-switch)
