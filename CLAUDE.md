@@ -2,6 +2,11 @@
 
 Pokemon Showdown multi-agent RL environment for prime-rl.
 
+**Detailed documentation**: See `docs/` folder — start with `docs/architecture.md` for
+the 4-layer design, `docs/concurrency.md` for the POKE_LOOP bridging model,
+`docs/rewards.md` for the configurable reward system, `docs/selfplay.md` for
+self-play mechanics. Full API reference in `docs/api.md`.
+
 ## IMPORTANT: Always use the project .venv
 
 ```bash
@@ -75,6 +80,18 @@ bash scripts/run_tests_remote.sh nid008268 -m unit -v
 bash scripts/run_tests_remote.sh nid008268 -m integration -v
 bash scripts/run_tests_remote.sh nid008268 -v  # all tests
 ```
+
+## Documentation
+
+| Doc | When to read |
+|-----|-------------|
+| `docs/architecture.md` | Before modifying any source file — understand the 4-layer design |
+| `docs/concurrency.md` | Before touching battle.py or players.py — POKE_LOOP bridging |
+| `docs/rewards.md` | Before changing reward logic — configurable system, single source of truth |
+| `docs/selfplay.md` | Before touching selfplay code — force-switch handling, hooks buffering |
+| `docs/testing.md` | Before writing tests — no-fall-through philosophy, mock patterns |
+| `docs/deployment.md` | Before running on Perlmutter — containers, Showdown, SLURM |
+| `docs/api.md` | API reference for all public classes and methods |
 
 ## Current Status
 
