@@ -109,14 +109,14 @@ def step_reward_fn(
 
 ### Storage
 
-Step rewards are stored in `step["extras"]["step_reward"]` — **separate from** `step["reward"]` (terminal reward). They are never mixed:
+Step rewards are **folded into** `step["reward"]` by `_assign_rewards`:
 
 ```python
-step["reward"] = 1.0                      # Terminal (from render_completion)
-step["extras"]["step_reward"] = 0.15      # Step-level (from step_reward_fn)
+step["reward"] = 1.0 + 0.15              # Terminal + step reward
+step["extras"]["step_reward"] = 0.15      # Original value kept for logging
 ```
 
-Training code decides how to combine them (sum, discount, separate advantage, etc.).
+This is necessary because prime-rl's `extract_result` only copies `reward` and `advantage` from trajectory steps — `extras` is dropped at the IPC boundary. Folding ensures step rewards reach training.
 
 ### Example: Faint Reward
 

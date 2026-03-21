@@ -10,12 +10,14 @@ Two play modes:
     "single"    — One agent vs heuristic opponent (random, max_damage, etc.)
     "self_play" — Both sides produce training trajectories
 
-Reward/advantage flow (verified against verifiers source):
+Reward/advantage flow (verified against verifiers + prime-rl source):
     render_completion → _assign_rewards sets step["reward"] + step["advantage"]
     → score_group: skips pre-set values (only sets if None)
-    → extract_result: copies reward, advantage, extras
+    → extract_result: copies reward, advantage (NOT extras — IPC boundary)
     → branch_rollout: TrainingSample.reward/advantage from step
     → orchestrator: skips pre-set advantages (only sets if None)
+    Note: step_reward_fn output is folded into step["reward"] by _assign_rewards
+    so it survives extract_result. Original value kept in extras for logging.
 
 Usage (verifiers integration):
     env = PokemonBattleEnv(battle_format="gen1randombattle", port=8000,
@@ -138,7 +140,7 @@ class PokemonBattleEnv(_EnvBase):
         play_mode: "single" (vs heuristic) or "self_play" (both train)
         opponent_type: Heuristic type for single mode: "random", "max_damage"
         observation_format: "pokechamp_io" or "simple"
-        system_prompt: Custom system prompt (None for default)
+        system_prompt: Override system prompt (None = use translator's)
         reward_win: Terminal reward for wins (default 1.0)
         reward_loss: Terminal reward for losses (default 0.0)
         reward_draw: Terminal reward for draws/truncations (default 0.0)
@@ -178,7 +180,9 @@ class PokemonBattleEnv(_EnvBase):
         self.reward_draw = reward_draw
         self.step_reward_fn = step_reward_fn
         self.max_game_turns = max_game_turns
-        self._system_prompt = system_prompt or self._default_system_prompt()
+        # None = preserve translator's system prompt (e.g. pokechamp's rich prompt)
+        # Explicit string = override with custom prompt
+        self._system_prompt = system_prompt
         self.translator = StateTranslator(format_style=observation_format)
 
         if _HAS_VERIFIERS:
@@ -193,10 +197,6 @@ class PokemonBattleEnv(_EnvBase):
                 **kwargs,
             )
             self.score_rollouts = True
-
-    @staticmethod
-    def _default_system_prompt() -> str:
-        return "You are a Pokemon battle AI. Choose the best action each turn."
 
     # ------------------------------------------------------------------
     # Dataset & Registration
@@ -348,7 +348,7 @@ class PokemonBattleEnv(_EnvBase):
                 f"Prompt build failed: {type(e).__name__}: {e}"
             ) from e
 
-        if self._system_prompt:
+        if self._system_prompt is not None:
             if messages and messages[0].get("role") == "system":
                 messages[0] = {
                     "role": "system",
@@ -428,8 +428,8 @@ class PokemonBattleEnv(_EnvBase):
             try:
                 if self.play_mode == "self_play":
                     await self._advance_selfplay(state, action, agent_idx)
-                    # Read updated battle from agent context (set by _advance_selfplay)
-                    next_battle = agent.battle
+                    # Turn hasn't resolved yet — both players must act first
+                    next_battle = None
                 else:
                     next_battle, done = await manager.step(action)
                     agent.battle = next_battle
@@ -438,7 +438,9 @@ class PokemonBattleEnv(_EnvBase):
                         result = manager.get_result()
                         state["won"] = result["won"]
                     elif next_battle:
-                        state["game_turn"] = next_battle.turn
+                        state["game_turn"] = max(
+                            state.get("game_turn", 0), next_battle.turn
+                        )
             except Exception as e:
                 state["game_over"] = True
                 raise _VfError(
@@ -475,7 +477,9 @@ class PokemonBattleEnv(_EnvBase):
             state["_agents"][next_idx].battle = next_battle
             state["_pending_states"] = pending
             if next_battle:
-                state["game_turn"] = next_battle.turn
+                state["game_turn"] = max(
+                    state.get("game_turn", 0), next_battle.turn
+                )
         else:
             new_pending = await manager.get_pending_selfplay_states()
             if not new_pending:
@@ -492,7 +496,9 @@ class PokemonBattleEnv(_EnvBase):
             for idx, b in new_pending[1:]:
                 state["_agents"][idx].battle = b
             if next_battle:
-                state["game_turn"] = next_battle.turn
+                state["game_turn"] = max(
+                    state.get("game_turn", 0), next_battle.turn
+                )
 
     # ------------------------------------------------------------------
     # Hook: render_completion
@@ -514,7 +520,10 @@ class PokemonBattleEnv(_EnvBase):
                 s for s in trajectory
                 if s.get("extras", {}).get("agent_idx", 0) == 0
             ]
-            state["reward"] = p0_steps[0]["reward"] if p0_steps else trajectory[0]["reward"]
+            state["reward"] = (
+                p0_steps[0]["reward"] if p0_steps
+                else self._compute_terminal_reward(state.get("won"))
+            )
         else:
             state["reward"] = 0.0
         state["completion"] = (
@@ -545,9 +554,10 @@ class PokemonBattleEnv(_EnvBase):
     def _assign_rewards(self, state: dict) -> None:
         """Assign per-step rewards and advantages from game outcome.
 
-        Sets step["reward"] for every step. When rewards vary within the
-        rollout (self-play with a winner), also pre-sets step["advantage"]
-        to prevent the framework from assigning uniform state-level values.
+        Sets step["reward"] for every step (terminal + step_reward_fn).
+        When rewards vary within the rollout (self-play with a winner, or
+        step rewards), also pre-sets step["advantage"] to prevent the
+        framework from assigning uniform state-level values.
 
         When rewards are uniform (single-agent terminal-only, or self-play
         draw), leaves advantage=None so score_group fills cross-rollout
@@ -559,7 +569,7 @@ class PokemonBattleEnv(_EnvBase):
 
         won = state.get("won")
 
-        # --- Per-step rewards ---
+        # --- Per-step terminal rewards ---
         if self.play_mode == "self_play":
             if won is None:
                 p0_reward, p1_reward = self.reward_draw, self.reward_draw
@@ -575,6 +585,17 @@ class PokemonBattleEnv(_EnvBase):
             reward = self._compute_terminal_reward(won)
             for step in trajectory:
                 step["reward"] = reward
+
+        # --- Fold step_reward_fn output into step["reward"] ---
+        # extras["step_reward"] is set by add_trajectory_step but extras
+        # are NOT copied through prime-rl's IPC (extract_result only copies
+        # reward, advantage, prompt, completion, tokens, temperature).
+        # Folding here ensures step rewards reach training.
+        # The original value remains in extras for logging/analysis.
+        for step in trajectory:
+            step_r = step.get("extras", {}).get("step_reward")
+            if step_r is not None:
+                step["reward"] += step_r
 
         # --- Per-step advantages (only when rewards are non-uniform) ---
         rewards = [s["reward"] for s in trajectory]

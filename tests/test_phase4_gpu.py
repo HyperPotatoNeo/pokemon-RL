@@ -159,6 +159,10 @@ class TestGPULLMvsHeuristic:
         # With simple format, even base models sometimes output JSON
         print(f"LLM parse success rate: {parse_successes}/{step_count} "
               f"({100*parse_successes/max(step_count,1):.0f}%)")
+        assert parse_successes > 0, (
+            f"LLM produced 0 valid parses out of {step_count} steps — "
+            "model output never matched expected JSON format"
+        )
 
         await env.cleanup_battle(state)
 

@@ -1,5 +1,30 @@
 # Progress
 
+## 2026-03-21: Post-Review Bug Fixes — 10 bugs fixed, 4 test gaps fixed
+
+### Done
+- **10 bugs fixed** from adversarial code review (verified against prime-rl source):
+  - HIGH: step_reward_fn output folded into step["reward"] (extras dropped at IPC)
+  - HIGH: choose_move timeout desync — sleep(0) yield before queue drain
+  - MEDIUM: stale next_battle in self-play set to None (matches documented contract)
+  - MEDIUM: pokechamp system prompt preserved (system_prompt=None default)
+  - MEDIUM: move/switch name normalization — re.sub strips all non-alphanumeric
+  - MEDIUM: close() sentinel on selfplay_relay before nulling
+  - LOW: dynamax_disable correct for all gens, game_turn monotonic guard,
+    render_completion reward fallback, multimodal content block handling
+- **4 test gaps fixed**: unconditional truncation assertions (max_game_turns=1),
+  cleanup exception suppression test, FailStartManager.close_called assert,
+  GPU parse success assertion
+- **2 deferred**: queue hang on POKE_LOOP death (rare), Zoroark illusion crash (vendor)
+- **Cross-node finding**: poke-env _battle_against hangs when both players in same
+  process connect to remote Showdown. Requires separate processes per node.
+
+### Test results
+- Unit: 217 passed
+- Integration: 43 passed (real Showdown battles)
+- GPU: 4 passed (Qwen3-4B via vLLM), 2 multinode skipped (requires separate processes)
+- Total: **264 passed**
+
 ## 2026-03-21: Phase 4 Verifiers Integration — IMPLEMENTED
 
 ### Done

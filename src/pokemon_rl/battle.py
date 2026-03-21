@@ -412,6 +412,10 @@ class BattleManager:
                 task.cancel()
         self._relay_tasks.clear()
 
+        # Unblock any reader waiting on the relay queue before nulling it
+        if self._selfplay_relay is not None:
+            self._selfplay_relay.put((None, None))
+
         self._player = None
         self._opponent = None
         self._opponent_player2 = None

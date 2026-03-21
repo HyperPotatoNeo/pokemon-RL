@@ -118,6 +118,19 @@ class ControllablePlayer:
                     self._consecutive_timeouts = 0
                     return action
                 except asyncio.TimeoutError:
+                    # Drain any stale action that arrived after timeout.
+                    # wait_for cancels the inner get() without consuming,
+                    # so a late action would desync all subsequent turns.
+                    # Yield first: the pending put was scheduled via
+                    # run_coroutine_threadsafe onto POKE_LOOP but hasn't
+                    # executed because we haven't yielded. sleep(0) lets
+                    # the event loop process it before we drain.
+                    await asyncio.sleep(0)
+                    while not self.action_queue.empty():
+                        try:
+                            self.action_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                     self._consecutive_timeouts += 1
                     if self._consecutive_timeouts >= self._max_consecutive_timeouts:
                         # Force forfeit to prevent zombie battles

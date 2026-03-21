@@ -88,10 +88,10 @@ class StateTranslator:
 
                 original_key = keys_lower[action_type]
                 move_name = str(action_json[original_key]).strip()
-                move_id = move_name.lower().replace(" ", "")
+                move_id = re.sub(r'[^a-z0-9]', '', move_name.lower())
 
                 for move in battle.available_moves:
-                    if move.id.lower().replace(" ", "") == move_id:
+                    if re.sub(r'[^a-z0-9]', '', move.id.lower()) == move_id:
                         return BattleOrder(
                             move,
                             dynamax=(action_type == "dynamax"),
@@ -102,10 +102,10 @@ class StateTranslator:
         if "switch" in keys_lower:
             original_key = keys_lower["switch"]
             switch_name = str(action_json[original_key]).strip()
-            switch_id = switch_name.lower().replace(" ", "")
+            switch_id = re.sub(r'[^a-z0-9]', '', switch_name.lower())
 
             for pokemon in battle.available_switches:
-                if pokemon.species.lower().replace(" ", "") == switch_id:
+                if re.sub(r'[^a-z0-9]', '', pokemon.species.lower()) == switch_id:
                     return BattleOrder(pokemon)
 
         return None
@@ -188,11 +188,30 @@ class StateTranslator:
             # Extract last assistant message content
             for msg in reversed(messages):
                 if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    return msg.get("content") or ""
+                    content = msg.get("content")
+                    # Handle multimodal content blocks (thinking models)
+                    if isinstance(content, list):
+                        return " ".join(
+                            block.get("text", "")
+                            for block in content
+                            if isinstance(block, dict)
+                            and block.get("type") == "text"
+                        )
+                    return content or ""
             # No assistant message — concatenate all content
-            return " ".join(
-                m.get("content", "") for m in messages if isinstance(m, dict)
-            )
+            parts = []
+            for m in messages:
+                if isinstance(m, dict):
+                    c = m.get("content", "")
+                    if isinstance(c, list):
+                        c = " ".join(
+                            block.get("text", "")
+                            for block in c
+                            if isinstance(block, dict)
+                            and block.get("type") == "text"
+                        )
+                    parts.append(c)
+            return " ".join(parts)
         return str(messages)
 
     @staticmethod
@@ -248,7 +267,7 @@ class StateTranslator:
                 "Defaulting to 'gen1ou'. This may produce incorrect damage calcs."
             )
         gen_data = poke_env.data.GenData.from_format(battle_format)
-        dynamax_disable = "gen1" in battle_format or "gen2" in battle_format or "gen3" in battle_format
+        dynamax_disable = "gen8" not in battle_format
         sim = LocalSim(
             battle,
             get_cached_move_effect(),

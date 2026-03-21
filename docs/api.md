@@ -211,7 +211,7 @@ PokemonBattleEnv(
     play_mode: str = "single",              # "single" or "self_play"
     opponent_type: str = "random",           # For single mode: "random", "max_damage"
     observation_format: str = "pokechamp_io",# "pokechamp_io" or "simple"
-    system_prompt: str | None = None,        # Custom system prompt (None for default)
+    system_prompt: str | None = None,        # Custom system prompt (None = use translator's)
     reward_win: float = 1.0,                 # Terminal reward for wins
     reward_loss: float = 0.0,                # Terminal reward for losses
     reward_draw: float = 0.0,                # Terminal reward for draws/truncations

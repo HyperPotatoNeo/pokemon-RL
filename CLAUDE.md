@@ -95,9 +95,15 @@ bash scripts/run_tests_remote.sh nid008268 -v  # all tests
 
 ## Current Status
 
-Phase 4 verifiers integration complete. 235 tests (207 unit + 28 integration).
+Phase 4 verifiers integration complete. 260 tests (217 unit + 43 integration), 4 GPU tests passing.
 `PokemonBattleEnv` inherits `vf.MultiTurnEnv` (conditional). Uses `play_mode`
 (not opponent_mode), `state["game_turn"]` (not turn), `step["extras"]["agent_idx"]`
 (not player_idx), `_assign_rewards(state)` (not trajectory, won).
+
+Key details:
+- `system_prompt=None` (default) preserves the translator's system prompt (e.g. pokechamp's rich prompt)
+- `step_reward_fn` output is folded into `step["reward"]` by `_assign_rewards` (extras dropped at IPC)
+- Move/switch name normalization strips all non-alphanumeric chars (matches poke-env's `to_id_str`)
+- Cross-node: requires `--net=host` containers + separate player processes per node
 
 See `PROGRESS.md` for latest updates and `TODO.md` for roadmap.

@@ -672,8 +672,13 @@ class TestEnvStateMachine:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_step_reward_separate_from_terminal(self):
-        """N1: step_reward (in extras) and terminal reward are independent fields."""
+    async def test_step_reward_folded_into_terminal(self):
+        """Step reward is folded into step["reward"] by _assign_rewards.
+
+        extras["step_reward"] is kept for logging, but the value is added
+        to step["reward"] so it survives prime-rl's extract_result IPC
+        (which only copies reward, advantage — not extras).
+        """
         from pokemon_rl.env import PokemonBattleEnv
 
         env = PokemonBattleEnv(
@@ -687,8 +692,10 @@ class TestEnvStateMachine:
         }
         await env.render_completion(state)
 
-        assert state["trajectory"][0]["reward"] == 1.0  # terminal
-        assert state["trajectory"][0]["extras"]["step_reward"] == 0.1  # unchanged
+        # Terminal (1.0) + step_reward (0.1) = 1.1
+        assert state["trajectory"][0]["reward"] == 1.1
+        # Original step_reward preserved in extras for logging
+        assert state["trajectory"][0]["extras"]["step_reward"] == 0.1
 
     @pytest.mark.unit
     def test_passthrough_reward_allows_negative(self):

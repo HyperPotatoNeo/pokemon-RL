@@ -117,13 +117,41 @@ node pokemon-showdown start --no-security --port 8000
 
 ## Multi-Node Battles
 
-For cross-node play (2 GPU nodes running different models):
+For cross-node play (e.g., 2 GPU nodes running different models):
 
-1. Both nodes must have Showdown server access. Either run Showdown on one node and set `server_host` on the other, or use `--net=host` on both containers.
+### Requirements
 
-2. Use `BattleManager(server_host="nid008268")` to connect to a remote Showdown.
+1. **`--net=host` on all containers.** Default bridge networking isolates the container — players cannot reach a Showdown server on another node. Use `scripts/_setup_node_hostnet.sh` instead of `setup_node.sh`:
+   ```bash
+   ssh nidXXXXXX "export HOME=$SCRATCH && \
+     export PODMANHPC_PODMAN_BIN=/global/common/shared/das/podman-4.7.0/bin/podman && \
+     bash $SCRATCH/pokemon-rl/scripts/_setup_node_hostnet.sh true"
+   ```
 
-3. Scripts in `scripts/_multinode_p1.py` and `scripts/_multinode_p2.py` demonstrate the pattern.
+2. **One Showdown server, all players connect to it.** Run Showdown on one node, set `server_host` on others:
+   ```python
+   BattleManager(server_host="nid008268", port=8000)
+   ```
+
+3. **Separate processes per node.** poke-env's `_battle_against` runs both players in the same process. Cross-node, this hangs because the challenge/accept matchmaking flow times out when both WebSocket connections go over the network from the same event loop. For real cross-node play, run one player process per node, each connecting to the shared Showdown server independently.
+
+### GPU Tests (vLLM)
+
+The GPU tests (`tests/test_phase4_gpu.py`) need vLLM serving a model:
+
+```bash
+# Inside container on the GPU node:
+source .venv/bin/activate
+export HF_HOME=/pscratch/sd/s/siddart2/.cache/huggingface
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen3-4B-Instruct-2507 \
+    --port 8001 --max-model-len 4096 \
+    --no-enable-log-requests &
+
+# Run GPU tests:
+VLLM_HOST=localhost VLLM_PORT=8001 MODEL_NAME=Qwen/Qwen3-4B-Instruct-2507 \
+SHOWDOWN_PORT=8000 python -m pytest tests/test_phase4_gpu.py -v
+```
 
 ## Filesystem Notes
 

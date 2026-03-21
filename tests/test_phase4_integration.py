@@ -468,13 +468,17 @@ class TestIntegrationTruncation:
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_max_game_turns_truncates(self, showdown_port):
-        """Setting max_game_turns=3 should truncate after 3 game turns."""
+        """max_game_turns=1 forces truncation after one step.
+
+        gen1randombattle with random moves never ends in 1 turn (no OHKO),
+        so truncation is guaranteed. Assertions are unconditional.
+        """
         from pokemon_rl.env import PokemonBattleEnv
 
         env = PokemonBattleEnv(
             battle_format="gen1randombattle", port=showdown_port,
             play_mode="single", observation_format="simple",
-            max_game_turns=3, reward_draw=0.5,
+            max_game_turns=1, reward_draw=0.5,
         )
         state = await env.setup_state({"task": "battle", "prompt": []})
 
@@ -492,11 +496,11 @@ class TestIntegrationTruncation:
 
         await env.render_completion(state)
 
-        # Game should end within a few steps
-        # (exact count depends on whether game naturally ended first)
-        if state.get("truncated"):
-            assert state["reward"] == 0.5, "Truncated game should use reward_draw"
-            assert state["won"] is None
+        assert state["game_over"] is True, "Game must end"
+        assert len(state["trajectory"]) > 0, "Must have at least one step"
+        assert state.get("truncated") is True, "Must truncate with max_game_turns=1"
+        assert state["reward"] == 0.5, "Truncated game should use reward_draw"
+        assert state["won"] is None, "Truncated game has no winner"
 
         await env.cleanup_battle(state)
 
@@ -595,13 +599,17 @@ class TestIntegrationTruncationSelfPlay:
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_selfplay_truncation_both_get_draw(self, showdown_port):
-        """HIGH-7 / T19.1: max_game_turns mid-self-play → both get reward_draw."""
+        """max_game_turns=1 forces truncation — both players get reward_draw.
+
+        gen1randombattle with random moves never ends in 1 turn,
+        so truncation is guaranteed. Assertions are unconditional.
+        """
         from pokemon_rl.env import PokemonBattleEnv
 
         env = PokemonBattleEnv(
             battle_format="gen1randombattle", port=showdown_port,
             play_mode="self_play", observation_format="simple",
-            max_game_turns=2, reward_draw=0.5,
+            max_game_turns=1, reward_draw=0.5,
         )
         state = await env.setup_state({"task": "battle", "prompt": []})
 
@@ -619,13 +627,15 @@ class TestIntegrationTruncationSelfPlay:
 
         await env.render_completion(state)
 
-        if state.get("truncated"):
-            # Both players should get reward_draw
-            for s in state["trajectory"]:
-                assert s["reward"] == 0.5, (
-                    f"Truncated self-play: all steps should get reward_draw=0.5, "
-                    f"got {s['reward']} for agent {s['extras']['agent_idx']}"
-                )
+        assert state["game_over"] is True, "Game must end"
+        assert len(state["trajectory"]) > 0, "Must have at least one step"
+        assert state.get("truncated") is True, "Must truncate with max_game_turns=1"
+        # Both players should get reward_draw
+        for s in state["trajectory"]:
+            assert s["reward"] == 0.5, (
+                f"Truncated self-play: all steps should get reward_draw=0.5, "
+                f"got {s['reward']} for agent {s['extras']['agent_idx']}"
+            )
 
         await env.cleanup_battle(state)
 

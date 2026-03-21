@@ -1086,6 +1086,21 @@ class TestCleanup:
         state = {}
         await env.cleanup_battle(state)  # Should not raise
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_cleanup_suppresses_close_exception(self):
+        """T2: cleanup_battle must suppress exceptions from manager.close()."""
+        env = self._make_env()
+
+        class RaisingManager:
+            async def close(self):
+                raise RuntimeError("Connection reset")
+
+        state = {"manager": RaisingManager()}
+        # Must NOT raise — cleanup swallows exceptions
+        await env.cleanup_battle(state)
+        assert state["manager"] is None, "manager must be cleared even on close error"
+
     def _make_env(self):
         from pokemon_rl.env import PokemonBattleEnv
         return PokemonBattleEnv(
@@ -1417,6 +1432,11 @@ class TestErrorHandling:
         with patch('pokemon_rl.battle.BattleManager', return_value=FailStartManager()):
             with pytest.raises(vf.Error):
                 await env.setup_state({"task": "battle", "prompt": []})
+
+        # T3: Verify manager was actually closed before the error propagated
+        assert FailStartManager.close_called, (
+            "setup_state must close the manager before raising the error"
+        )
 
 
 # ============================================================================
