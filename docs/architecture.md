@@ -118,6 +118,4 @@ Both players controlled externally. See [selfplay.md](selfplay.md) for details.
 
 2. **Deferred imports**: All poke-env imports are inside functions, not at module level. This lets unit tests run on systems without poke-env installed.
 
-3. **poke-env data symlink**: `poke_env/` symlink in project root points to pokechamp's copy. Required for poke-env's relative-path data file lookups. Gitignored.
-
-4. **Own venv**: pokemon-rl has its own `.venv` to isolate from system/conda environments. `setup_node.sh` installs pokechamp from local path.
+3. **Own venv**: pokemon-rl has its own `.venv` to isolate from system/conda environments. Installing pokechamp (`pip install -e /path/to/pokechamp`) puts poke-env into site-packages where it's importable normally. No symlinks needed.

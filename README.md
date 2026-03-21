@@ -19,16 +19,56 @@ Layer 1: ShowdownEngine     — Node.js Pokemon Showdown process manager
 
 See [docs/architecture.md](docs/architecture.md) for detailed data flow and design decisions.
 
-## Quick Start
+## Installation
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js (for Pokemon Showdown server)
+- [pokechamp](https://github.com/HyperPotatoNeo/pokechamp) cloned locally (brings poke-env as a bundled dependency)
+
+### Install
 
 ```bash
-# On NERSC Perlmutter compute node (see docs/deployment.md):
-bash scripts/setup_node.sh
+git clone https://github.com/HyperPotatoNeo/pokemon-RL.git
+cd pokemon-RL
 
-# Run tests:
-.venv/bin/python -m pytest -m unit -v          # login node (no Showdown)
-bash scripts/run_tests_remote.sh nid008268 -v  # compute node (all tests)
+# Create venv and install
+python -m venv .venv
+source .venv/bin/activate
+
+# Install pokechamp (brings poke-env + transitive deps like torch)
+pip install -e /path/to/pokechamp
+
+# Install pokemon-rl with test deps
+pip install -e ".[test]"
 ```
+
+Or with `uv` (faster):
+```bash
+uv venv --python 3.12 .venv && source .venv/bin/activate
+uv pip install -e /path/to/pokechamp
+uv pip install -e ".[test]"
+```
+
+### Start Showdown Server
+
+```bash
+cd /path/to/pokemon-showdown  # from pokechamp repo or smogon/pokemon-showdown
+node pokemon-showdown start --no-security --port 8000
+```
+
+### Run Tests
+
+```bash
+# Unit tests (no Showdown needed):
+.venv/bin/python -m pytest -m unit -v
+
+# All tests (Showdown must be running on port 8000):
+.venv/bin/python -m pytest -v
+```
+
+For NERSC Perlmutter deployment, see [docs/deployment.md](docs/deployment.md).
 
 ## Usage
 
@@ -87,7 +127,7 @@ See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 
 - **[poke-env](https://github.com/hsahovic/poke-env)** (installed via pokechamp) — Pokemon Showdown client library. Provides the `Player` base class, `Battle` objects, `BattleOrder` action representation, and WebSocket communication with Showdown. pokemon-rl's `ControllablePlayer` subclasses poke-env's `Player` to invert the callback-driven model into imperative queue-based control. All battle state (available moves, HP, types, etc.) comes from poke-env's `Battle` objects.
 
-- **[pokechamp](https://github.com/HyperPotatoNeo/pokechamp)** — LLM Pokemon battle agent. pokemon-rl uses pokechamp for two things: (1) the `"pokechamp_io"` prompt format in `StateTranslator`, which calls pokechamp's `state_translate` + `LocalSim` to produce rich prompts with damage calculations, and (2) as the installation vehicle for poke-env and its transitive dependencies (torch, etc.). pokechamp's `poke_env/` data directory is symlinked into the project root for poke-env's relative-path data file lookups.
+- **[pokechamp](https://github.com/HyperPotatoNeo/pokechamp)** — LLM Pokemon battle agent. pokemon-rl uses pokechamp for two things: (1) the `"pokechamp_io"` prompt format in `StateTranslator`, which calls pokechamp's `state_translate` + `LocalSim` to produce rich prompts with damage calculations, and (2) as the installation vehicle for poke-env and its transitive dependencies (torch, etc.). Installing pokechamp via `pip install -e` puts poke-env into site-packages where it's importable normally.
 
 - **[metamon](https://github.com/hsahovic/metamon)** — Pokemon battle baselines. The multi-node battle scripts (`scripts/_multinode_p1.py`, `_multinode_p2.py`) use metamon's `EmeraldKaizo` baseline for cross-node testing. metamon provides heuristic opponents stronger than poke-env's built-in `RandomPlayer` and `MaxBasePowerPlayer`. Not a runtime dependency for pokemon-rl itself.
 

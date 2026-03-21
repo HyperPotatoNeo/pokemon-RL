@@ -130,7 +130,7 @@ For cross-node play (2 GPU nodes running different models):
 - **$SCRATCH** (`/pscratch/sd/s/siddart2/`): Fast Lustre, purged periodically. All code and data here.
 - **$HOME** (`/global/homes/s/siddart2/`): Persistent but small. Scripts and configs.
 - Inside container, `HOME` is overridden to `$SCRATCH`.
-- The `poke_env` symlink in the project root must point to pokechamp's poke_env for data file lookups.
+- poke-env is installed into site-packages via `pip install -e pokechamp`. No symlinks needed.
 
 ## SLURM Quick Reference
 

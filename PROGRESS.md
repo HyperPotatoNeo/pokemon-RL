@@ -110,8 +110,8 @@ does it call `get_pending_selfplay_states()` for the next turn.
 ### Key decisions
 - **Own venv**: pokemon-rl has its own `.venv`. `setup_node.sh` installs pokechamp from local
   path (brings poke_env, torch, and all transitive deps). No PYTHONPATH hacks.
-- **poke_env data symlink**: pokechamp's `poke_env` looks up data files via relative paths.
-  `poke_env` symlink in project root points to pokechamp's copy (gitignored).
+- **poke-env via pokechamp**: Installing pokechamp (`pip install -e`) puts poke_env into
+  site-packages. No symlinks needed.
 - **Circular import fix**: `import poke_env` before `pokechamp.prompts` to avoid
   `pokechamp.prompts → poke_env → baselines → pokechamp.prompts` circular dependency.
 - **Real poke-env types in tests**: Mock objects use `Move('id', gen=1)` and

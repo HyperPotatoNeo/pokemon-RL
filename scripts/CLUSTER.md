@@ -49,7 +49,6 @@ python -m pytest -m integration -v
 - **Used for**: Metamon heuristic/RL agent battles
 - **Activate**: `source .venv/bin/activate && export METAMON_CACHE_DIR=...`
 - **CRITICAL**: Must run from `/pscratch/sd/s/siddart2/metamon/` directory
-  (pokemon-rl's `poke_env` symlink pollutes Python path otherwise)
 
 ### Why two venvs?
 Pokechamp and metamon use **different forks of poke_env** with incompatible APIs:

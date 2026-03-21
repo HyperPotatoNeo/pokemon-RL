@@ -3,9 +3,6 @@ scripts/*
 !scripts/README.md
 !scripts/CLUSTER.md
 
-# Symlinked data directory (created by setup_node.sh)
-/poke_env
-
 # Python
 __pycache__/
 *.py[cod]
