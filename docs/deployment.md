@@ -158,7 +158,8 @@ SHOWDOWN_PORT=8000 python -m pytest tests/test_phase4_gpu.py -v
 - **$SCRATCH** (`/pscratch/sd/s/siddart2/`): Fast Lustre, purged periodically. All code and data here.
 - **$HOME** (`/global/homes/s/siddart2/`): Persistent but small. Scripts and configs.
 - Inside container, `HOME` is overridden to `$SCRATCH`.
-- poke-env is installed into site-packages via `pip install -e pokechamp`. No symlinks needed.
+- poke-env is installed into site-packages via `pip install -e pokechamp`.
+- A `poke_env` **symlink** exists at the project root → `vendor/pokechamp/poke_env`. This is required because pokechamp's `data_cache.py` uses relative paths (`./poke_env/data/static/...`). The symlink shadows the site-packages poke_env, which causes a circular import if you `from pokechamp.prompts import ...` directly. **Always `import poke_env` first** to break the cycle (the translator does this automatically).
 
 ## SLURM Quick Reference
 

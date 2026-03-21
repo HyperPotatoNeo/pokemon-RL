@@ -74,7 +74,7 @@ podman-hpc exec skyrl bash -c "
     echo ''
     echo 'Verifying imports...'
     python -c 'from poke_env.player.player import Player; print(\"  poke-env: OK\")'
-    python -c 'from pokechamp.prompts import state_translate; print(\"  pokechamp: OK\")'
+    python -c 'import poke_env; from pokechamp.prompts import state_translate; print(\"  pokechamp: OK\")'
     python -c 'from pokemon_rl.engine import ShowdownEngine; print(\"  pokemon_rl: OK\")'
 "
 
