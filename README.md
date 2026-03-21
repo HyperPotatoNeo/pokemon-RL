@@ -85,9 +85,14 @@ See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 
 ## Dependencies
 
-- **poke-env** (via pokechamp) — Pokemon Showdown client library
-- **pokechamp** — Battle state translation with damage calculations
-- **Pokemon Showdown** — Node.js battle server
+- **[poke-env](https://github.com/hsahovic/poke-env)** (installed via pokechamp) — Pokemon Showdown client library. Provides the `Player` base class, `Battle` objects, `BattleOrder` action representation, and WebSocket communication with Showdown. pokemon-rl's `ControllablePlayer` subclasses poke-env's `Player` to invert the callback-driven model into imperative queue-based control. All battle state (available moves, HP, types, etc.) comes from poke-env's `Battle` objects.
+
+- **[pokechamp](https://github.com/HyperPotatoNeo/pokechamp)** — LLM Pokemon battle agent. pokemon-rl uses pokechamp for two things: (1) the `"pokechamp_io"` prompt format in `StateTranslator`, which calls pokechamp's `state_translate` + `LocalSim` to produce rich prompts with damage calculations, and (2) as the installation vehicle for poke-env and its transitive dependencies (torch, etc.). pokechamp's `poke_env/` data directory is symlinked into the project root for poke-env's relative-path data file lookups.
+
+- **[metamon](https://github.com/hsahovic/metamon)** — Pokemon battle baselines. The multi-node battle scripts (`scripts/_multinode_p1.py`, `_multinode_p2.py`) use metamon's `EmeraldKaizo` baseline for cross-node testing. metamon provides heuristic opponents stronger than poke-env's built-in `RandomPlayer` and `MaxBasePowerPlayer`. Not a runtime dependency for pokemon-rl itself.
+
+- **[Pokemon Showdown](https://github.com/smogon/pokemon-showdown)** — Node.js battle server. `ShowdownEngine` manages the server process. Battles run locally via WebSocket (no internet connection needed). Requires Node.js.
+
 - **pytest**, **pytest-asyncio** — Testing
 
 No direct numpy, torch, or ML framework dependencies. The env produces text prompts and consumes text responses — the LLM/RL framework is plugged in externally via prime-rl's verifiers.
