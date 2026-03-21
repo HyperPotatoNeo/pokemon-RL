@@ -29,15 +29,26 @@
 - [x] Atomic JSONL writes, socket leak fix, PIPE → DEVNULL
 - [x] 149 tests (122 unit + 27 integration)
 
-## Next: Verifiers Integration (Layer 4)
+## Done: Verifiers Integration Plan
 
-- [ ] Inherit from vf.MultiTurnEnv
-- [ ] Integrate with prime-rl orchestrator
-- [ ] Branching trajectory strategy
-- [ ] Passthrough rubric (score_rollouts=True)
-- [ ] load_environment() discovery
-- [ ] Per-step GRPO advantage computation
-- [ ] Tests with mock vLLM client
+- [x] Full design plan (3 rounds adversarial review) → `PHASE_VERIFIERS_PLAN.md`
+
+## Done: Verifiers Integration (Layer 4) — Implementation
+
+- [x] PokemonBattleEnv(vf.MultiTurnEnv) with hook overrides
+- [x] PokemonRubric (passthrough reward + metrics, explicitly registered)
+- [x] _AgentContext passive dataclass
+- [x] _build_agent_prompt (fresh mode, extensible for episodic/windowed)
+- [x] _assign_rewards (single override: rewards + config-derived advantage baseline)
+- [x] @vf.stop game_over, @vf.cleanup cleanup_battle
+- [x] Error boundary: all BattleManager/translator calls wrapped → vf.Error
+- [x] load_environment() entry point in __init__.py
+- [x] StateTranslator.extract_completion_text (Messages → str)
+- [x] Unit tests T1-T13 (216 passing)
+- [x] Integration tests T14-T20 (16 passing, +12 old integration)
+- [x] GPU tests G1-G4 (6 passing, including cross-node)
+- [x] Documentation updated (all docs, README, CLUSTER.md)
+- [x] pokechamp submodule at vendor/pokechamp (pokechamp_io format works)
 
 ## Next: GPU Smoke Tests
 

@@ -2,45 +2,78 @@
 
 ## Quick Start
 
-### Allocate nodes
+### Allocate nodes (from _CAP_tinker reservation)
 ```bash
-# Single node (interactive, 4h):
-salloc -A m5017 -C "gpu&hbm80g" --reservation=_CAP_tinker --qos=interactive --time=4:00:00 --gpus-per-node=4 --nodes=1 --no-shell
+# Single node:
+sbatch -A m5017 --reservation=_CAP_tinker -C "gpu&hbm80g" --qos=normal \
+    --time=1:00:00 --gpus-per-node=4 --nodes=1 your_script.sh
 
 # Two nodes (for multi-node tests):
-salloc -A m5017 -C "gpu&hbm80g" --reservation=_CAP_tinker --qos=interactive --time=4:00:00 --gpus-per-node=4 --nodes=2 --no-shell
+sbatch -A m5017 --reservation=_CAP_tinker -C "gpu&hbm80g" --qos=normal \
+    --time=1:00:00 --gpus-per-node=4 --nodes=2 your_script.sh
 ```
 
-### Setup node
-For single-node tests (Showdown + container):
-```bash
-ssh nidXXXXXX "bash /pscratch/sd/s/siddart2/pokemon-rl/scripts/_setup_node.sh"
-```
-
-For multi-node (requires `--net=host` for cross-node connectivity):
-```bash
-# Node with Showdown:
-ssh nidXXXXXX "bash /pscratch/sd/s/siddart2/pokemon-rl/scripts/_setup_node_hostnet.sh true"
-# Node without Showdown:
-ssh nidYYYYYY "bash /pscratch/sd/s/siddart2/pokemon-rl/scripts/_setup_node_hostnet.sh false"
-```
+**Reservation nodes**: nid008205, nid008268, nid008297, nid008304, nid008448, nid008480
+(6 GPU nodes, hbm80g, until 2026-03-29)
 
 ### Run tests
 ```bash
 # Unit tests (login node, no Showdown needed):
 .venv/bin/python -m pytest -m unit -v
 
-# Integration tests (compute node):
-ssh nidXXXXXX "export HOME=... && podman-hpc exec skyrl bash -c '
-cd /pscratch/sd/s/siddart2/pokemon-rl && source .venv/bin/activate
-python -m pytest -m integration -v
-'"
+# Integration tests (login node, Showdown on localhost):
+# Start Showdown first, then:
+.venv/bin/python -m pytest -m integration -v
+
+# GPU tests (compute node via sbatch):
+sbatch scripts/_gpu_test.sh           # Single-node LLM tests
+sbatch scripts/_gpu_test_multinode.sh  # Multi-node cross-node tests
 ```
+
+## Key Findings (2026-03-21)
+
+### Lustre flock issue with HF cache
+vLLM's model loading uses `filelock` which calls `fcntl.flock()`. Lustre (`/pscratch`)
+does NOT support `flock` — you get `OSError: [Errno 524]`. **Fix**: Copy model cache
+to node-local `/tmp` before starting vLLM:
+```bash
+export HF_HOME=/tmp/hf_cache_$$
+export HF_HUB_OFFLINE=1
+mkdir -p $HF_HOME/hub
+cp -r /pscratch/sd/s/siddart2/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507 $HF_HOME/hub/
+```
+
+### vLLM startup time
+vLLM takes ~60-90s to fully start (model load + CUDA graph compilation). The API
+server port (8001) only opens after compilation completes. Use `sleep 90` before
+checking port availability.
+
+### WebSocket URI format
+Pokechamp's poke-env fork takes `host:port` in `ServerConfiguration` and internally
+prepends `ws://` and appends `/showdown/websocket`. Do NOT pass the full URI —
+`ServerConfiguration("localhost:8000", ...)` is correct. Passing
+`ws://localhost:8000/showdown/websocket` would result in double-prefixing.
+
+Note: metamon's poke-env fork may differ. Use separate venvs.
+
+### pokechamp_io data cache paths
+Pokechamp's `data_cache.py` uses hardcoded relative paths (`./poke_env/data/static/...`).
+Requires a symlink at the project root: `ln -sf vendor/pokechamp/poke_env poke_env`.
+Without this, pokechamp_io prompts will have empty damage calcs (0 move effects loaded).
+
+### SSH vs srun for compute nodes
+Cannot SSH to compute nodes directly (pam_slurm_adopt blocks). Use `srun` within
+an allocation or `sbatch` scripts. For multi-node, use `srun --nodelist=nidXXXXXX`.
+
+### Login node can run Showdown + integration tests
+Node.js and Showdown work fine on login nodes (no GPU needed). Integration tests
+(real Showdown battles with random/garbage actions) run on login nodes. Only GPU
+tests (vLLM) need compute nodes.
 
 ## Architecture: Two Environments
 
 ### pokemon-rl venv (`$SCRATCH/pokemon-rl/.venv`)
-- **Contains**: pokechamp, poke_env (pokechamp's fork), openai, vllm, pytest
+- **Contains**: pokechamp, poke_env (pokechamp's fork), openai, vllm, verifiers, pytest
 - **Used for**: All BattleManager tests, LLM battles via pokechamp, integration tests
 - **Activate**: `source .venv/bin/activate`
 
@@ -72,49 +105,35 @@ This mirrors online play — one authoritative server, multiple clients.
 ```
 Node A (Showdown node):         Node B (player-only):
 ┌─────────────────────┐         ┌──────────────────┐
-│ Container (--net=host)│         │ Container (--net=host)│
 │ ├─ Showdown :8000   │◄────────│ ├─ Player B      │
 │ ├─ Player A         │         │ └─ vLLM :8001    │
 │ └─ vLLM :8001       │         └──────────────────┘
 └─────────────────────┘
 ```
 
-Both players connect to `ws://nidA:8000/showdown/websocket`.
+Both players use `ServerConfiguration("nidA:8000", ...)` (poke-env adds ws:// prefix).
 
 ## vLLM Setup
 
 ```bash
-# Inside container (pokemon-rl venv):
-source .venv/bin/activate
-export HF_HOME=/pscratch/sd/s/siddart2/.cache/huggingface
-export VLLM_WORKER_MULTIPROC_METHOD=spawn
+# On compute node (via sbatch script):
+export HF_HOME=/tmp/hf_cache_$$
+export HF_HUB_OFFLINE=1
+mkdir -p $HF_HOME/hub
+cp -r /pscratch/sd/s/siddart2/.cache/huggingface/hub/models--Qwen--Qwen3-4B-Instruct-2507 $HF_HOME/hub/
 
-python -m vllm.entrypoints.openai.api_server \
+.venv/bin/python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-4B-Instruct-2507 \
     --port 8001 \
-    --max-model-len 8192 \
-    --tensor-parallel-size 1 \
-    --enable-prefix-caching \
-    --gpu-memory-utilization 0.4 \
+    --max-model-len 4096 \
     --no-enable-log-requests
 ```
 
 **Notes**:
-- HF cache at `/pscratch/sd/s/siddart2/.cache/huggingface/hub/` (not `/huggingface/hub/`)
-- Use `--no-enable-log-requests` (not `--disable-log-requests`) for this vllm version
-- Model must be cached or downloadable. Available: Qwen3-4B-Instruct-2507, Qwen3-0.6B, Qwen2.5-1.5B-Instruct
-- `--gpu-memory-utilization 0.4` leaves room for other processes on the same GPU
-
-## WebSocket URI Formats
-
-Two different poke_env forks use different URI formats:
-
-| Fork | ServerConfiguration format | Example |
-|------|--------------------------|---------|
-| Pokechamp's poke_env | `"localhost:8000"` | `ServerConfiguration("localhost:8000", "https://...")` |
-| Metamon's poke_env | `"ws://localhost:8000/showdown/websocket"` | `ServerConfiguration("ws://localhost:8000/showdown/websocket", "https://...")` |
-
-For cross-node, replace `localhost` with the node hostname (e.g., `nid008268`).
+- MUST copy HF cache to `/tmp` (Lustre flock issue, see above)
+- Use `--no-enable-log-requests` (not `--disable-log-requests`) for vllm 0.17.x
+- Model must be pre-cached. Available: Qwen3-4B-Instruct-2507, Qwen3-0.6B, Qwen2.5-1.5B-Instruct
+- Default `--gpu-memory-utilization 0.9` is fine for dedicated test nodes
 
 ## Metamon Agent Notes
 
@@ -132,11 +151,14 @@ For testing with BattleManager, use metamon's **heuristic baselines** instead:
 
 These are poke-env Player subclasses with intelligent `choose_move()` implementations.
 
-## Verified Test Results (2026-03-20)
+## Verified Test Results (2026-03-21)
 
 | Test | Result | Details |
 |------|--------|---------|
-| EmeraldKaizo vs EmeraldKaizo (gen1randombattle) | PASS | 43 decisions, 0 defaults |
-| Qwen3-4B vs Random (BattleManager turn-by-turn) | PASS | 33 decisions, reasoning traces captured |
-| Qwen3-4B self-play (BattleManager) | PASS | 60 decisions, force-switches handled |
-| Multi-node EmeraldKaizo (nid008268 vs nid008205) | PASS | 37 decisions, 0 defaults, `--net=host` |
+| Unit tests (207) | ALL PASS | Login node, no Showdown |
+| Integration tests (28) | ALL PASS | Login node + Showdown on localhost |
+| GPU: LLM vs random | PASS | Qwen3-4B, compute node, real battles |
+| GPU: LLM self-play | PASS | Qwen3-4B vs itself, force-switches handled |
+| GPU: Concurrent LLM | PASS | 2 concurrent LLM battles |
+| GPU: Cross-node battle | PASS | Showdown on nid008205, test from nid008268 |
+| GPU: Cross-node selfplay | PASS | Cross-node self-play |

@@ -1,7 +1,7 @@
 """Tests for the MultiTurnEnv hooks path — the interface verifiers will use.
 
 Tests setup_state → get_prompt_messages → add_trajectory_step →
-render_completion for both heuristic and self-play modes, using mock
+render_completion for both single and self-play modes, using mock
 BattleManagers that ENFORCE the API contract.
 
 TEST PHILOSOPHY — NO FALL-THROUGH PASSES:
@@ -11,16 +11,28 @@ TEST PHILOSOPHY — NO FALL-THROUGH PASSES:
     - Every trajectory field is verified, not just length > 0
 
 BUGS FIXED (these tests now pass):
-    1. setup_state unpacks (idx, battle) tuples into bare Battle objects
+    1. setup_state unpacks (idx, battle) tuples into _AgentContext objects
     2. _advance_selfplay buffers pending states, calls get_pending only after all acted
     3. _pending_states consumed correctly — P2 state no longer lost
     4. selfplay won=None gives symmetric 0.0 rewards to both players
+
+Phase 4 renames applied:
+    - opponent_mode="heuristic" → play_mode="single"
+    - opponent_mode="self_play" → play_mode="self_play"
+    - state["turn"] → state["game_turn"]
+    - state["current_player"] → state["_current_agent_idx"]
+    - state["battle"] → state["_agents"][idx].battle
+    - step["player_idx"] → step["extras"]["agent_idx"]
+    - step["parsed_action"] → step["extras"]["parsed_action"]
+    - step["force_switch"] → step["extras"]["force_switch"]
+    - _assign_rewards(trajectory, won) → _assign_rewards(state)
+    - Completions use Messages format (list of dicts)
 """
 
 import pytest
 from unittest.mock import patch
 
-from pokemon_rl.env import PokemonBattleEnv
+from pokemon_rl.env import PokemonBattleEnv, _AgentContext
 
 
 # ---- Mock infrastructure ----
@@ -38,7 +50,7 @@ class MockBattle:
     """Minimal Battle mock with enough attributes for env hooks.
 
     CRITICAL: This is a plain object, NOT a tuple. Tests verify that
-    state['battle'] contains MockBattle instances, not (idx, MockBattle) tuples.
+    agent.battle contains MockBattle instances, not (idx, MockBattle) tuples.
     """
     def __init__(self, name="mock", turn=1, moves=None, switches=None):
         self.name = name
@@ -57,7 +69,7 @@ class MockAction:
 
 
 class MockTranslator:
-    """Mock StateTranslator that validates input types.
+    """Mock StateTranslator that validates input types and supports Messages format.
 
     battle_to_prompt ASSERTS it receives a Battle-like object, not a tuple.
     This catches the setup_state unpacking bug immediately with a clear
@@ -75,20 +87,47 @@ class MockTranslator:
         ]
 
     def parse_action(self, text, battle):
-        if "move" in text.lower():
+        if isinstance(text, list):
+            # Messages format: extract last assistant content
+            for msg in reversed(text):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    text = msg.get("content", "")
+                    break
+            else:
+                return None
+        if "move" in str(text).lower():
             return MockAction("parsed_move")
         return None
 
     def get_fallback_action(self, battle):
         return MockAction("fallback")
 
+    @staticmethod
+    def extract_completion_text(messages):
+        """Convert Messages to string (Phase 4 addition)."""
+        if isinstance(messages, str):
+            return messages
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    return msg.get("content", "")
+            return " ".join(m.get("content", "") for m in messages if isinstance(m, dict))
+        return str(messages)
+
+    def extract_user_content(self, messages):
+        if isinstance(messages, list):
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    return msg.get("content", "")
+        return ""
+
 
 class StrictMockHeuristicManager:
-    """Mock BattleManager for heuristic mode that enforces the API contract.
+    """Mock BattleManager for single mode that enforces the API contract.
 
     Contract:
-    1. start_battle() called once → returns Battle
-    2. step(action) called per turn → returns (Battle, False) or (None, True)
+    1. start_battle() called once -> returns Battle
+    2. step(action) called per turn -> returns (Battle, False) or (None, True)
     3. get_result() called after finish
     """
     def __init__(self, game_turns=3):
@@ -121,6 +160,9 @@ class StrictMockHeuristicManager:
             "format": "gen1randombattle", "battle_tag": "mock-heuristic",
             "selfplay": False,
         }
+
+    async def close(self):
+        self._finished = True
 
     @property
     def is_finished(self):
@@ -205,6 +247,9 @@ class StrictMockSelfplayManager:
             "selfplay": True,
         }
 
+    async def close(self):
+        self._finished = True
+
     @property
     def is_finished(self):
         return self._finished
@@ -218,64 +263,56 @@ class TestHooksSetup:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_full_battle_no_manager(self):
-        """full_battle mode should NOT create a BattleManager."""
-        env = PokemonBattleEnv(adapter=None, translator=None)
-        state = await env.setup_state({})
-        assert state["manager"] is None
-        assert state["battle"] is None
-        assert state["game_over"] is False
-
-    @pytest.mark.unit
-    @pytest.mark.asyncio
-    async def test_heuristic_creates_manager_and_battle(self):
-        """turn_by_turn + heuristic: manager created, battle is a Battle object."""
+    async def test_single_creates_manager_and_battle(self):
+        """play_mode=single: manager created, agent.battle is a Battle object."""
         mock_mgr = StrictMockHeuristicManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
         assert state["manager"] is mock_mgr
-        assert isinstance(state["battle"], MockBattle), (
-            f"Expected MockBattle, got {type(state['battle']).__name__}: {state['battle']!r}"
+        agent = state["_agents"][state["_current_agent_idx"]]
+        assert isinstance(agent.battle, MockBattle), (
+            f"Expected MockBattle, got {type(agent.battle).__name__}: {agent.battle!r}"
         )
         assert state["game_over"] is False
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_selfplay_battle_is_not_tuple(self):
-        """CRITICAL: state['battle'] must be a Battle object, NOT a tuple.
+        """CRITICAL: agent.battle must be a Battle object, NOT a tuple.
 
         start_battle_selfplay() returns [(0, battle1), (1, battle2)].
-        setup_state must unpack and store bare Battle objects.
+        setup_state must unpack and store bare Battle objects in _AgentContext.
 
         Previously broken: s1, s2 = [(0,b1), (1,b2)] stored tuples.
-        Fixed: pending[0][1] extracts bare Battle object.
+        Fixed: _AgentContext.battle = pending[idx][1] extracts bare Battle object.
         """
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
-        battle = state["battle"]
+        agent = state["_agents"][state["_current_agent_idx"]]
+        battle = agent.battle
         assert not isinstance(battle, tuple), (
-            f"state['battle'] is a tuple {battle!r}. "
+            f"agent.battle is a tuple {battle!r}. "
             f"Expected a Battle object. setup_state is storing the raw "
             f"(player_idx, battle) tuple from start_battle_selfplay."
         )
         assert hasattr(battle, "available_moves"), (
-            f"state['battle'] has no available_moves. Type: {type(battle).__name__}"
+            f"agent.battle has no available_moves. Type: {type(battle).__name__}"
         )
         assert hasattr(battle, "turn"), (
-            f"state['battle'] has no turn attribute. Type: {type(battle).__name__}"
+            f"agent.battle has no turn attribute. Type: {type(battle).__name__}"
         )
 
     @pytest.mark.unit
@@ -283,18 +320,20 @@ class TestHooksSetup:
     async def test_selfplay_game_over_when_battles_none(self):
         """When battles are None, game_over must be True.
 
-        Previously broken: checked `if s1 is None` but s1 was (0, None) — truthy.
+        Previously broken: checked `if s1 is None` but s1 was (0, None) -- truthy.
         Fixed: uses `any(b is None for _, b in pending)`.
         """
         class FailManager:
             async def start_battle_selfplay(self, **kw):
                 return [(0, None), (1, None)]
+            async def close(self):
+                pass
 
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=FailManager()):
             state = await env.setup_state({})
 
@@ -305,42 +344,43 @@ class TestHooksSetup:
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_selfplay_current_player_starts_zero(self):
-        """Self-play must start with current_player=0."""
+    async def test_selfplay_current_agent_starts_zero(self):
+        """Self-play must start with _current_agent_idx=0."""
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
-        assert state.get("current_player") == 0
+        assert state.get("_current_agent_idx") == 0
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_heuristic_battle_not_none(self):
-        """Heuristic setup must set a non-None battle when game starts."""
+    async def test_single_battle_not_none(self):
+        """Single mode setup must set a non-None battle when game starts."""
         mock_mgr = StrictMockHeuristicManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
-        assert state["battle"] is not None, "Battle should be set after setup"
+        agent = state["_agents"][state["_current_agent_idx"]]
+        assert agent.battle is not None, "Battle should be set after setup"
         # Also verify it's not a tuple (defensive)
-        assert not isinstance(state["battle"], (list, tuple))
+        assert not isinstance(agent.battle, (list, tuple))
 
 
-# ---- Tests: heuristic hooks cycle ----
+# ---- Tests: single mode hooks cycle ----
 
 
-class TestHooksHeuristicCycle:
-    """Full hooks cycle for heuristic: setup → prompt → step → render."""
+class TestHooksSingleCycle:
+    """Full hooks cycle for single mode: setup -> prompt -> step -> render."""
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -348,10 +388,10 @@ class TestHooksHeuristicCycle:
         """3-turn game. Verify trajectory length, rewards, fields."""
         mock_mgr = StrictMockHeuristicManager(game_turns=3)
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
@@ -363,23 +403,25 @@ class TestHooksHeuristicCycle:
             assert len(prompt) == 2, "Prompt should have system + user messages"
             assert prompt[0]["role"] == "system"
             assert prompt[1]["role"] == "user"
-            await env.add_trajectory_step(state, {"completion": '{"move": "tackle"}'})
+            await env.add_trajectory_step(state, {
+                "completion": [{"role": "assistant", "content": '{"move": "tackle"}'}],
+                "prompt": prompt, "tokens": {},
+            })
             step_count += 1
-            assert step_count <= 50, "Runaway loop — game should have ended"
+            assert step_count <= 50, "Runaway loop -- game should have ended"
 
         await env.render_completion(state)
 
         assert len(state["trajectory"]) == 3, (
             f"Expected 3 steps for 3-turn game, got {len(state['trajectory'])}"
         )
-        assert state["decision_count"] == 3
         assert state["reward"] == 1.0  # mock returns won=True
 
         for i, s in enumerate(state["trajectory"]):
-            assert s["player_idx"] == 0, f"Step {i}: heuristic = player 0 only"
-            assert s["reward"] == 1.0, f"Step {i}: win → reward 1.0"
-            assert "parsed_action" in s, f"Step {i}: missing parsed_action"
-            assert "force_switch" in s, f"Step {i}: missing force_switch"
+            assert s["extras"]["agent_idx"] == 0, f"Step {i}: single mode = agent 0 only"
+            assert s["reward"] == 1.0, f"Step {i}: win -> reward 1.0"
+            assert "parsed_action" in s["extras"], f"Step {i}: missing extras.parsed_action"
+            assert "force_switch" in s["extras"], f"Step {i}: missing extras.force_switch"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -387,58 +429,67 @@ class TestHooksHeuristicCycle:
         """After game ends, get_prompt_messages must return None."""
         mock_mgr = StrictMockHeuristicManager(game_turns=1)
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
         prompt = await env.get_prompt_messages(state)
         assert prompt is not None, "First prompt should not be None"
-        await env.add_trajectory_step(state, {"completion": "move tackle"})
+        await env.add_trajectory_step(state, {
+            "completion": [{"role": "assistant", "content": "move tackle"}],
+            "prompt": prompt, "tokens": {},
+        })
         assert state["game_over"] is True, "1-turn game should be over"
 
-        prompt2 = await env.get_prompt_messages(state)
-        assert prompt2 is None, "Prompt after game_over must be None"
+        # After game_over, game_over() stop condition should fire
+        assert await env.game_over(state) is True
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_fallback_on_garbage_input(self):
-        """Garbage completion text → fallback action, not crash."""
+        """Garbage completion text -> fallback action, not crash."""
         mock_mgr = StrictMockHeuristicManager(game_turns=1)
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
         await env.get_prompt_messages(state)
-        await env.add_trajectory_step(state, {"completion": "garbage no json"})
+        await env.add_trajectory_step(state, {
+            "completion": [{"role": "assistant", "content": "garbage no json"}],
+            "prompt": [], "tokens": {},
+        })
 
-        assert state["trajectory"][0]["parsed_action"] == "/choose move fallback", (
-            f"Expected fallback, got: {state['trajectory'][0]['parsed_action']}"
+        assert state["trajectory"][0]["extras"]["parsed_action"] == "/choose move fallback", (
+            f"Expected fallback, got: {state['trajectory'][0]['extras']['parsed_action']}"
         )
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_parsed_action_on_valid_input(self):
-        """Valid move JSON → parsed action recorded."""
+        """Valid move JSON -> parsed action recorded."""
         mock_mgr = StrictMockHeuristicManager(game_turns=1)
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
         await env.get_prompt_messages(state)
-        await env.add_trajectory_step(state, {"completion": '{"move": "thunderbolt"}'})
+        await env.add_trajectory_step(state, {
+            "completion": [{"role": "assistant", "content": '{"move": "thunderbolt"}'}],
+            "prompt": [], "tokens": {},
+        })
 
-        assert state["trajectory"][0]["parsed_action"] == "/choose move parsed_move"
+        assert state["trajectory"][0]["extras"]["parsed_action"] == "/choose move parsed_move"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -446,15 +497,18 @@ class TestHooksHeuristicCycle:
         """After game ends, state['won'] must be set from get_result."""
         mock_mgr = StrictMockHeuristicManager(game_turns=1)
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="heuristic",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="single", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
         await env.get_prompt_messages(state)
-        await env.add_trajectory_step(state, {"completion": "move tackle"})
+        await env.add_trajectory_step(state, {
+            "completion": [{"role": "assistant", "content": "move tackle"}],
+            "prompt": [], "tokens": {},
+        })
 
         assert "won" in state, "state['won'] must be set after game over"
         assert state["won"] is True, "Mock manager returns won=True"
@@ -467,7 +521,7 @@ class TestHooksSelfplayCycle:
     """Tests for the selfplay hooks path.
 
     These tests validate the fixed selfplay hooks flow:
-    - setup_state unpacks tuples correctly
+    - setup_state unpacks tuples into _AgentContext objects correctly
     - _advance_selfplay buffers pending states
     - get_pending only called after all buffered actions submitted
     """
@@ -482,10 +536,10 @@ class TestHooksSelfplayCycle:
         """
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
         with patch('pokemon_rl.battle.BattleManager', return_value=mock_mgr):
             state = await env.setup_state({})
 
@@ -494,17 +548,20 @@ class TestHooksSelfplayCycle:
             prompt = await env.get_prompt_messages(state)
             if prompt is None:
                 break
-            await env.add_trajectory_step(state, {"completion": '{"move": "tackle"}'})
+            await env.add_trajectory_step(state, {
+                "completion": [{"role": "assistant", "content": '{"move": "tackle"}'}],
+                "prompt": prompt, "tokens": {},
+            })
             step_count += 1
-            assert step_count <= 100, "Possible deadlock — 100 steps without end"
+            assert step_count <= 100, "Possible deadlock -- 100 steps without end"
 
         await env.render_completion(state)
 
-        p1 = [s for s in state["trajectory"] if s["player_idx"] == 0]
-        p2 = [s for s in state["trajectory"] if s["player_idx"] == 1]
+        p0 = [s for s in state["trajectory"] if s["extras"]["agent_idx"] == 0]
+        p1 = [s for s in state["trajectory"] if s["extras"]["agent_idx"] == 1]
+        assert len(p0) > 0, "P0 must have trajectory steps"
         assert len(p1) > 0, "P1 must have trajectory steps"
-        assert len(p2) > 0, "P2 must have trajectory steps"
-        assert p1[0]["reward"] != p2[0]["reward"], "P1 and P2 rewards must differ"
+        assert p0[0]["reward"] != p1[0]["reward"], "P0 and P1 rewards must differ"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -516,24 +573,27 @@ class TestHooksSelfplayCycle:
         """
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
 
-        # Manually construct correct state (bypassing setup_state tuple bug)
+        # Manually construct correct state using _AgentContext
         pending = await mock_mgr.start_battle_selfplay()
+        agent0 = _AgentContext(agent_idx=0)
+        agent0.battle = pending[0][1]
+        agent1 = _AgentContext(agent_idx=1)
+        agent1.battle = pending[1][1]
+
         state = {
             "trajectory": [],
             "game_over": False,
-            "turn": 1,
-            "decision_count": 0,
+            "game_turn": 1,
             "won": None,
             "truncated": False,
-            "parse_failure_count": 0,
             "manager": mock_mgr,
-            "current_player": 0,
-            "battle": pending[0][1],  # bare Battle, not tuple
+            "_current_agent_idx": 0,
+            "_agents": [agent0, agent1],
             "_pending_states": pending,
         }
 
@@ -541,52 +601,59 @@ class TestHooksSelfplayCycle:
         # This SHOULD buffer P2's state and NOT call get_pending
         await env._advance_selfplay(state, action, 0)
 
-        assert state["current_player"] == 1, (
-            f"After P1 acts, current_player should be 1, got {state.get('current_player')}"
+        assert state["_current_agent_idx"] == 1, (
+            f"After P0 acts, _current_agent_idx should be 1, got {state.get('_current_agent_idx')}"
         )
-        assert not state["game_over"], "Game should not be over after just P1's action"
+        assert not state["game_over"], "Game should not be over after just P0's action"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_second_player_state_not_lost(self):
         """P2's buffered state must be used for the next prompt.
 
-        After P1 acts, state['battle'] should be P2's battle from
+        After P0 acts, agent1.battle should be P2's battle from
         the buffered _pending_states, not from a new get_pending call.
         """
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
 
         pending = await mock_mgr.start_battle_selfplay()
         p2_battle = pending[1][1]
 
+        agent0 = _AgentContext(agent_idx=0)
+        agent0.battle = pending[0][1]
+        agent1 = _AgentContext(agent_idx=1)
+        agent1.battle = pending[1][1]
+
         state = {
             "trajectory": [],
             "game_over": False,
-            "turn": 1,
-            "decision_count": 0,
+            "game_turn": 1,
             "won": None,
             "truncated": False,
-            "parse_failure_count": 0,
             "manager": mock_mgr,
-            "current_player": 0,
-            "battle": pending[0][1],
+            "_current_agent_idx": 0,
+            "_agents": [agent0, agent1],
             "_pending_states": pending,
         }
 
-        # P1 acts
-        await env.add_trajectory_step(state, {"completion": '{"move": "tackle"}'})
+        # P0 acts
+        await env.add_trajectory_step(state, {
+            "completion": [{"role": "assistant", "content": '{"move": "tackle"}'}],
+            "prompt": [], "tokens": {},
+        })
 
         # P2's battle should now be set from the buffered state
-        assert state["battle"] is p2_battle, (
-            f"P2's battle was lost. state['battle'] should be p2's MockBattle. "
-            f"Got: {state['battle']!r}"
+        current_agent = state["_agents"][state["_current_agent_idx"]]
+        assert current_agent.battle is p2_battle, (
+            f"P2's battle was lost. agent1.battle should be p2's MockBattle. "
+            f"Got: {current_agent.battle!r}"
         )
-        assert state["current_player"] == 1
+        assert state["_current_agent_idx"] == 1
 
         # P2 should get a prompt
         prompt = await env.get_prompt_messages(state)
@@ -597,28 +664,27 @@ class TestHooksSelfplayCycle:
     async def test_selfplay_won_none_symmetric_rewards(self):
         """Self-play draw/crash (won=None): both players get reward_draw.
 
-        Default reward_draw=0.0. With N1, this uses configurable rewards.
+        Default reward_draw=0.0. With Phase 4, this uses configurable rewards.
         """
         env = PokemonBattleEnv(
-            translator=None,
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
         state = {
-            "won": None, "truncated": False, "turn": 5, "decision_count": 10,
+            "won": None, "truncated": False, "game_turn": 5,
             "trajectory": [
-                {"player_idx": 0},
-                {"player_idx": 1},
+                {"extras": {"agent_idx": 0}},
+                {"extras": {"agent_idx": 1}},
             ],
         }
 
-        await env.render_completion(state)
+        env._assign_rewards(state)
 
-        p1_reward = state["trajectory"][0]["reward"]
-        p2_reward = state["trajectory"][1]["reward"]
-        assert p1_reward == p2_reward == 0.0, (
+        p0_reward = state["trajectory"][0]["reward"]
+        p1_reward = state["trajectory"][1]["reward"]
+        assert p0_reward == p1_reward == 0.0, (
             f"For won=None, both players should get reward_draw (0.0). "
-            f"Got P1={p1_reward}, P2={p2_reward}"
+            f"Got P0={p0_reward}, P1={p1_reward}"
         )
 
 
@@ -628,7 +694,7 @@ class TestHooksSelfplayCycle:
 class TestStrictMockValidation:
     """Validate that the strict mocks themselves work correctly.
 
-    These tests should ALWAYS PASS — they verify the test infrastructure.
+    These tests should ALWAYS PASS -- they verify the test infrastructure.
     """
 
     @pytest.mark.unit
@@ -712,13 +778,13 @@ class TestSelfplayStandaloneContract:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_standalone_follows_contract(self):
-        """Standalone submits all actions before get_pending — no assertion errors."""
+        """Standalone submits all actions before get_pending -- no assertion errors."""
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
 
         result = await env._run_selfplay_standalone(
             mock_mgr, lambda b: MockAction(), []
@@ -726,7 +792,6 @@ class TestSelfplayStandaloneContract:
 
         assert result["won"] is True
         assert result["selfplay"] is True
-        assert result["decision_count"] > 0
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -734,58 +799,58 @@ class TestSelfplayStandaloneContract:
         """Both players must have trajectory steps in standalone selfplay."""
         mock_mgr = StrictMockSelfplayManager()  # 3 turns
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
 
         trajectory = []
         result = await env._run_selfplay_standalone(
             mock_mgr, lambda b: MockAction(), trajectory
         )
 
-        p1 = [s for s in result["trajectory"] if s["player_idx"] == 0]
-        p2 = [s for s in result["trajectory"] if s["player_idx"] == 1]
+        p0 = [s for s in result["trajectory"] if s["extras"]["agent_idx"] == 0]
+        p1 = [s for s in result["trajectory"] if s["extras"]["agent_idx"] == 1]
+        assert len(p0) == 3, f"P0 should have 3 steps (3 turns), got {len(p0)}"
         assert len(p1) == 3, f"P1 should have 3 steps (3 turns), got {len(p1)}"
-        assert len(p2) == 3, f"P2 should have 3 steps (3 turns), got {len(p2)}"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_standalone_opposite_rewards(self):
-        """Standalone selfplay: P1 wins → P1=1.0, P2=0.0."""
+        """Standalone selfplay: P0 wins -> P0=1.0, P1=0.0."""
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
 
         result = await env._run_selfplay_standalone(
             mock_mgr, lambda b: MockAction(), []
         )
 
         for s in result["trajectory"]:
-            if s["player_idx"] == 0:
-                assert s["reward"] == 1.0, f"P1 wins → 1.0, got {s['reward']}"
+            if s["extras"]["agent_idx"] == 0:
+                assert s["reward"] == 1.0, f"P0 wins -> 1.0, got {s['reward']}"
             else:
-                assert s["reward"] == 0.0, f"P2 loses → 0.0, got {s['reward']}"
+                assert s["reward"] == 0.0, f"P1 loses -> 0.0, got {s['reward']}"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_standalone_player_indices_only_0_or_1(self):
-        """All trajectory steps must have player_idx 0 or 1."""
+    async def test_standalone_agent_indices_only_0_or_1(self):
+        """All trajectory steps must have agent_idx 0 or 1."""
         mock_mgr = StrictMockSelfplayManager()
         env = PokemonBattleEnv(
-            translator=MockTranslator(),
-            control_mode="turn_by_turn",
-            opponent_mode="self_play",
+            battle_format="gen1randombattle", port=8000,
+            play_mode="self_play", observation_format="simple",
         )
+        env.translator = MockTranslator()
 
         result = await env._run_selfplay_standalone(
             mock_mgr, lambda b: MockAction(), []
         )
 
         for i, s in enumerate(result["trajectory"]):
-            assert s["player_idx"] in (0, 1), (
-                f"Step {i}: player_idx must be 0 or 1, got {s['player_idx']}"
+            assert s["extras"]["agent_idx"] in (0, 1), (
+                f"Step {i}: agent_idx must be 0 or 1, got {s['extras']['agent_idx']}"
             )

@@ -18,7 +18,7 @@ PokemonBattleEnv(
 
 ### Single Source of Truth
 
-`_compute_terminal_reward(won)` at `env.py:331-338`:
+`_compute_terminal_reward(won)` at `env.py:539-543`:
 
 ```python
 def _compute_terminal_reward(self, won: bool | None) -> float:
@@ -27,9 +27,10 @@ def _compute_terminal_reward(self, won: bool | None) -> float:
     return self.reward_win if won else self.reward_loss
 ```
 
-`_assign_rewards(trajectory, won)` at `env.py:340-368` handles both modes:
-- **Heuristic**: All steps get the same reward.
-- **Self-play**: P1 and P2 get explicit per-player rewards (not `1 - reward`).
+`_assign_rewards(state)` at `env.py:545-591` handles both modes:
+- **Single-agent**: All steps get the same reward.
+- **Self-play**: P0 and P1 get explicit per-player rewards (not `1 - reward`).
+  When rewards are non-uniform, pre-sets `step["advantage"]` using config-derived baseline `(reward_win + reward_loss) / 2`.
 
 These two methods are called by:
 - `render_completion` (hooks path)
@@ -67,7 +68,7 @@ The old code used `1.0 - reward` which only works for [0, 1] scale.
 | Truncation | `None` | `True` | `reward_draw` (0.0) |
 | Crash/error | `None` | `False` | `reward_draw` (0.0) |
 
-Truncation occurs when `state["turn"] >= max_game_turns` (default 200). The `truncated` flag is set in `get_prompt_messages` at `env.py:184-190`.
+Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The truncation check is in `game_over` (`@vf.stop` hook) at `env.py:291`.
 
 ### Metrics
 
@@ -76,11 +77,9 @@ Truncation occurs when `state["turn"] >= max_game_turns` (default 200). The `tru
 ```python
 {
     "won": 1 | 0 | -1,       # 1=win, 0=loss, -1=draw/crash/truncation
-    "truncated": 0 | 1,
-    "turns": int,
-    "decision_count": int,
+    "game_turns": int,
     "trajectory_length": int,
-    "parse_failure_count": int,
+    "parse_failures": int,
 }
 ```
 
@@ -105,16 +104,16 @@ def step_reward_fn(
 ) -> float:
 ```
 
-- **Heuristic mode**: `battle_after` is the next Battle state (or `None` on game over).
+- **Single-agent mode**: `battle_after` is the next Battle state (or `None` on game over).
 - **Self-play mode**: `battle_after` is always `None` because the turn hasn't resolved yet (both players must act before Showdown advances).
 
 ### Storage
 
-Step rewards are stored as `step["step_reward"]` — **separate from** `step["reward"]` (terminal reward). They are never mixed:
+Step rewards are stored in `step["extras"]["step_reward"]` — **separate from** `step["reward"]` (terminal reward). They are never mixed:
 
 ```python
-step["reward"] = 1.0          # Terminal (from render_completion)
-step["step_reward"] = 0.15    # Step-level (from step_reward_fn)
+step["reward"] = 1.0                      # Terminal (from render_completion)
+step["extras"]["step_reward"] = 0.15      # Step-level (from step_reward_fn)
 ```
 
 Training code decides how to combine them (sum, discount, separate advantage, etc.).
@@ -134,15 +133,32 @@ def faint_reward(before, after, action, player_idx):
 ## Parse Failure Tracking
 
 When the LLM outputs unparseable text, `add_trajectory_step` records:
-- `step["parse_failed"] = True` on the trajectory step
-- `state["parse_failure_count"]` incremented
-- `metrics["parse_failure_count"]` in render_completion output
+- `step["extras"]["parse_failed"] = True` on the trajectory step
+- `_AgentContext.parse_failure_count` incremented
+- `metrics["parse_failures"]` in render_completion output
 
 The fallback action is a **random legal action** (not max-power), preventing reward hacking where a model learns to output garbage to get the strongest heuristic action for free.
 
+## Advantage Pre-Setting
+
+In self-play with non-uniform rewards (a winner and a loser), `_assign_rewards` pre-sets `step["advantage"]` using a config-derived baseline:
+
+```python
+baseline = (reward_win + reward_loss) / 2
+step["advantage"] = step["reward"] - baseline
+```
+
+This is necessary because the verifiers framework's `score_group` fills `t["advantage"]` BEFORE the orchestrator's `compute_advantages`. Pre-set values survive because every downstream consumer checks `is None` before overwriting. Using a within-rollout mean would be skewed by step-count asymmetry (a winner with more steps gets lower per-step advantage). The midpoint is deterministic and gives uniform magnitude regardless of step counts.
+
+When rewards are uniform (single-agent, or self-play draw), advantage is left as `None` so `score_group` fills cross-rollout normalized advantage.
+
+## PokemonRubric
+
+`PokemonRubric` provides metrics through the verifiers scoring pipeline. It is registered as the rubric for the pokemon environment and called by `score_group`, which overwrites `state["metrics"]`. This is the integration point between pokemon-rl's reward system and prime-rl's verifiers framework.
+
 ## Passthrough Rubric
 
-`_passthrough_reward` at `env.py:36-42` is used for prime-rl's verifiers integration:
+`_passthrough_reward` at `env.py:57` is used for prime-rl's verifiers integration:
 
 ```python
 def _passthrough_reward(state, **kwargs):

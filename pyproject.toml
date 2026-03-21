@@ -24,4 +24,6 @@ asyncio_mode = "auto"
 markers = [
     "unit: runs without external dependencies",
     "integration: needs Showdown server + poke-env (compute node)",
+    "gpu: needs GPU + vLLM serving a model (compute node)",
+    "multinode: needs 2+ compute nodes",
 ]

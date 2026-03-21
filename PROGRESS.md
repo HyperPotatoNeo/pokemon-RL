@@ -1,5 +1,78 @@
 # Progress
 
+## 2026-03-21: Phase 4 Verifiers Integration — IMPLEMENTED
+
+### Done
+- **PokemonBattleEnv(vf.MultiTurnEnv)**: Full hook overrides (setup_state, get_prompt_messages,
+  add_trajectory_step, render_completion), conditional verifiers inheritance
+- **PokemonRubric**: Passthrough reward + game metrics (won, game_turns, parse_failures),
+  explicitly registered via add_reward_func/add_metric (C13)
+- **_AgentContext**: Passive dataclass, per-agent state (battle, steps, message_history)
+- **_build_agent_prompt**: Fresh prompt mode via translator, custom system_prompt override
+- **_assign_rewards(state)**: Per-step rewards, config-derived advantage baseline
+  `(reward_win + reward_loss) / 2` for self-play (not step-count-dependent)
+- **@vf.stop game_over**: Counts game turns not trajectory steps
+- **@vf.cleanup cleanup_battle**: Exception-safe, idempotent
+- **Error boundaries**: All BattleManager/translator calls wrapped → vf.Error
+- **load_environment()** in __init__.py for verifiers env discovery
+- **StateTranslator**: extract_completion_text (Messages→str), extract_user_content,
+  _RobustOrder for mock-safe fallback actions
+- **ServerConfiguration fix**: uses plain `host:port` format (pokechamp's poke-env fork prepends ws:// internally)
+- **Old tests updated**: test_env.py, test_hooks.py — all Phase 4 renames applied
+- **3 rounds adversarial review**: cleanup exception safety, extras update vs overwrite,
+  _current_agent_idx always set, content=None handling, advantage baseline fix,
+  step_reward_fn self-play fix, trajectory retry reset, score_rollouts bypass prevention,
+  state["reward"] P0 perspective consistency
+
+### Test results (with verifiers 0.1.9.post3)
+- Unit: 207 passed, 0 failed, 0 skipped
+- Integration: 28 passed, 1 skipped (pokechamp), 0 failed
+- Total: **235 passed**
+
+### Key design decisions
+- `reward_win=1.0, reward_loss=0.0, reward_draw=0.0` — wins=1, everything else=0
+- Self-play advantage baseline = `(reward_win + reward_loss) / 2`, not within-rollout mean
+- `score_rollouts=True` enforced (kwargs.pop prevents bypass)
+- `max_turns=-1` disables framework step counting; @vf.stop game_over uses game turns
+- Metrics set in render_completion as fallback for standalone mode; PokemonRubric provides
+  them in full verifiers pipeline via score_group
+
+## 2026-03-20: Verifiers integration plan complete — 3 rounds adversarial review
+
+### Done
+- **Full design plan**: `PHASE_VERIFIERS_PLAN.md` — 13 parts covering architecture,
+  hooks, self-play, rewards, dataset, registration, tests, implementation order.
+- **3 rounds adversarial review** against actual verifiers source code:
+  - Round 1 (correctness): Found `@final rollout()` constraint, score_group advantage
+    poisoning, non-existent `vf.register_environment`, wasted LLM call on battle=None.
+  - Round 2 (simplicity): Merged 3-method render_completion into single `_assign_rewards`
+    override. Moved `extract_completion_text` to StateTranslator. Made `_AgentContext`
+    passive dataclass. Added score_group survival test.
+  - Round 3 (consistency): Found PokemonRubric methods not auto-registered (silent zero
+    rewards — blocking). Fixed passthrough_reward None handling. Fixed setup_state
+    double-close. Wrapped translator calls in error boundary.
+
+### Key design decisions
+- **Hooks-only**: Works within `@final rollout()` loop. Five overrides + `@vf.stop` + `@vf.cleanup`.
+- **Fresh prompts via `_build_agent_prompt`**: Single override point, extensible for
+  episodic/windowed modes. `_AgentContext.message_history` always recorded as enabler.
+- **Single `_assign_rewards` override**: Handles rewards AND advantages. Auto-detects
+  non-uniform rewards (self-play, shaped) and pre-sets advantages to prevent score_group
+  from assigning uniform state-level values.
+- **`PokemonRubric`**: Combines passthrough reward + game metrics. Methods must be
+  explicitly registered via `add_reward_func`/`add_metric` (framework does not auto-discover).
+- **play_mode="single"/"self_play"**: Replaces opponent_mode="heuristic"/"self_play".
+- **Branching trajectory strategy mandatory** for fresh-prompt mode.
+
+### Verified data flow (reward/advantage pipeline)
+```
+render_completion → _assign_rewards sets step["reward"] + step["advantage"]
+→ score_group: skips pre-set values (only sets if None)
+→ extract_result: copies reward, advantage, extras
+→ branch_rollout: TrainingSample.reward/advantage from step
+→ orchestrator: skips pre-set advantages (only sets if None)
+```
+
 ## 2026-03-20: Code review fixes — 137 tests passing (111 unit + 26 integration)
 
 ### Done

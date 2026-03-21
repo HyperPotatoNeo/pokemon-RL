@@ -15,7 +15,7 @@ A symmetric API like `step_selfplay(p1_action, p2_action)` would **deadlock** wh
 
 ## Sequential Selfplay API
 
-BattleManager uses a sequential model (`battle.py:229-361`):
+BattleManager uses a sequential model (`battle.py:229-392`):
 
 ```python
 manager = BattleManager(port=8000)
@@ -46,13 +46,13 @@ Normal turns produce both states near-simultaneously (both players get choose_mo
 
 The MultiTurnEnv hooks model calls `add_trajectory_step` **once per LLM response** — one player at a time. But self-play needs ALL pending actions submitted before Showdown resolves the turn.
 
-Solution: `_advance_selfplay` (`env.py:275-325`) maintains a `_pending_states` buffer.
+Solution: `_advance_selfplay` (`env.py:458-496`) maintains a `_pending_states` buffer.
 
 ### Flow for a Normal Turn (2 pending states)
 
 ```
 State: _pending_states = [(0, battle_p1), (1, battle_p2)]
-       current_player = 0
+       _current_agent_idx = 0
 
 Hook call #1 (P1's turn):
   1. add_trajectory_step gets completion from LLM
@@ -61,7 +61,7 @@ Hook call #1 (P1's turn):
      a. submit_selfplay_action(0, action)
      b. Remove (0, ...) from _pending_states
      c. _pending_states still has [(1, battle_p2)]
-     d. Set current_player = 1, battle = battle_p2
+     d. Set _current_agent_idx = 1, battle = battle_p2
 
 Hook call #2 (P2's turn):
   1. get_prompt_messages returns P2's prompt
@@ -71,14 +71,14 @@ Hook call #2 (P2's turn):
      b. Remove (1, ...) from _pending_states
      c. _pending_states is now EMPTY
      d. Call get_pending_selfplay_states() → new turn
-     e. Update current_player and battle from new pending
+     e. Update _current_agent_idx and battle from new pending
 ```
 
 ### Flow for a Force-Switch (1 pending state)
 
 ```
 State: _pending_states = [(0, battle_p1)]  # Only P1 faints
-       current_player = 0
+       _current_agent_idx = 0
 
 Hook call #1 (P1's force-switch):
   1. add_trajectory_step → parse → _advance_selfplay
@@ -90,8 +90,8 @@ Hook call #1 (P1's force-switch):
 ### Key Invariants
 
 1. `get_pending_selfplay_states()` is ONLY called when `_pending_states` is empty (all buffered actions submitted)
-2. `current_player` always matches the first entry in `_pending_states`
-3. `state["battle"]` is always a bare Battle object, never a `(idx, battle)` tuple
+2. `_current_agent_idx` always matches the first entry in `_pending_states`
+3. `state["_agents"][idx].battle` is always a bare Battle object, never a `(idx, battle)` tuple
 
 ## Relay Queue Architecture
 
@@ -120,13 +120,12 @@ elif won is None:   # draw/crash
 
 ## Standalone Testing
 
-`run_turn_by_turn` with `opponent_mode="self_play"` runs self-play without an LLM:
+`run_turn_by_turn` with `play_mode="self_play"` runs self-play without an LLM:
 
 ```python
 env = PokemonBattleEnv(
-    translator=StateTranslator(format_style="simple"),
-    control_mode="turn_by_turn",
-    opponent_mode="self_play",
+    play_mode="self_play",
+    observation_format="simple",
 )
 result = await env.run_turn_by_turn(action_fn=random_action)
 ```

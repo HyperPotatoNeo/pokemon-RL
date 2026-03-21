@@ -174,6 +174,8 @@ StateTranslator(
 | `battle_to_prompt(battle)` | `list[dict]` | `[{role: "system", content: ...}, {role: "user", content: ...}]` |
 | `parse_action(response_text, battle)` | `BattleOrder \| None` | Extract last JSON, match against available moves/switches. |
 | `get_fallback_action(battle)` | `BattleOrder` | Random legal action (not max-power). |
+| `extract_completion_text(messages)` | `str` | **Static.** Extract text from completion (handles both string and Messages format). Returns last assistant message content from Messages list. |
+| `extract_user_content(messages)` | `str` | **Static.** Extract user content from a Messages list. Returns user message content or empty string. |
 
 ### Format Styles
 
@@ -197,43 +199,48 @@ StateTranslator(
 
 ## PokemonBattleEnv (`env.py`)
 
-LLM harness implementing the MultiTurnEnv 4-hook interface.
+LLM harness implementing the verifiers `MultiTurnEnv` hook interface. Extends `vf.MultiTurnEnv` when verifiers is installed; degrades to plain `object` base for standalone use.
 
 ### Constructor
 
 ```python
 PokemonBattleEnv(
-    # Components
-    adapter: BattleAdapter = None,      # For full_battle mode
-    translator: StateTranslator = None, # Prompt/action conversion
-
-    # Mode selection
-    control_mode: str = "full_battle",  # "full_battle" or "turn_by_turn"
-    opponent_mode: str = "heuristic",   # "heuristic" or "self_play"
-    opponent_type: str = "random",      # For heuristic: "random", "max_damage"
-
-    # Game settings
-    max_game_turns: int = 200,
-    port: int = 8000,
     battle_format: str = "gen1randombattle",
+    port: int = 8000,
     server_host: str = "localhost",
-
-    # Rewards (see docs/rewards.md)
-    reward_win: float = 1.0,
-    reward_loss: float = 0.0,
-    reward_draw: float = 0.0,
-    step_reward_fn: Callable = None,
+    play_mode: str = "single",              # "single" or "self_play"
+    opponent_type: str = "random",           # For single mode: "random", "max_damage"
+    observation_format: str = "pokechamp_io",# "pokechamp_io" or "simple"
+    system_prompt: str | None = None,        # Custom system prompt (None for default)
+    reward_win: float = 1.0,                 # Terminal reward for wins
+    reward_loss: float = 0.0,                # Terminal reward for losses
+    reward_draw: float = 0.0,                # Terminal reward for draws/truncations
+    step_reward_fn: Callable | None = None,  # (battle_before, battle_after, action, agent_idx) -> float
+    max_game_turns: int = 200,
+    num_battles: int = 1000,                 # Dataset size (battle placeholders)
+    **kwargs,                                # Forwarded to vf.MultiTurnEnv (minus score_rollouts)
 )
 ```
 
-### MultiTurnEnv Hooks
+When verifiers is installed, the constructor creates a `PokemonRubric` and a placeholder HuggingFace `Dataset` of size `num_battles`. `score_rollouts` is forced to `True` (kwargs override prevented).
 
-| Hook | Signature | Description |
-|------|-----------|-------------|
-| `async setup_state(state: dict)` | `-> dict` | Initialize battle. Cleans up previous manager. |
-| `async get_prompt_messages(state: dict)` | `-> list[dict] \| None` | Return LLM prompt or None (game over). |
-| `async add_trajectory_step(state: dict, step: dict)` | `-> None` | Parse action, advance game, record step + step_reward. |
-| `async render_completion(state: dict)` | `-> None` | Assign terminal rewards to all trajectory steps. Write metrics. |
+### Hooks (7 methods)
+
+| Hook | Decorator | Signature | Description |
+|------|-----------|-----------|-------------|
+| `setup_state` | — | `async (state: dict) -> dict` | Initialize battle, create `_AgentContext`(s). Cleans up previous manager. |
+| `game_over` | `@vf.stop` | `async (state: dict) -> bool` | Stop condition: game ended or max turns reached. |
+| `get_prompt_messages` | — | `async (state: dict) -> list[dict] \| None` | Build prompt for current agent via `_build_agent_prompt`. |
+| `add_trajectory_step` | — | `async (state: dict, step: dict) -> None` | Parse action, advance game, record step metadata in `extras`. |
+| `render_completion` | — | `async (state: dict) -> None` | Assign rewards/advantages via `_assign_rewards`. Set metrics. |
+| `cleanup_battle` | `@vf.cleanup` | `async (state: dict) -> None` | Close BattleManager on any exit path. Must not raise. |
+| `env_response` | — | `async (messages, state) -> list` | Required abstract stub. Unused (overridden by `get_prompt_messages`). |
+
+### Extensible Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `_build_agent_prompt(agent, state)` | `(_AgentContext, dict) -> list[dict]` | Build prompt for current turn. Override for episodic or windowed modes. |
 
 ### State Dict Keys
 
@@ -243,44 +250,87 @@ Set by `setup_state`:
 |-----|------|-------------|
 | `trajectory` | `list[dict]` | Trajectory steps |
 | `game_over` | `bool` | True when game ended |
-| `turn` | `int` | Current game turn |
-| `decision_count` | `int` | Total decisions (including force-switches) |
+| `game_turn` | `int` | Current game turn |
 | `truncated` | `bool` | True if ended by max_game_turns |
-| `won` | `bool \| None` | True/False/None (P1 perspective) |
-| `parse_failure_count` | `int` | Unparseable LLM outputs |
-| `battle` | `Battle \| None` | Current poke-env Battle object |
-| `manager` | `BattleManager \| None` | For turn_by_turn mode |
-| `current_player` | `int` | 0 or 1 (self-play only) |
+| `won` | `bool \| None` | True/False/None (P0 perspective) |
+| `_agents` | `list[_AgentContext]` | Per-agent state (1 for single, 2 for self-play) |
+| `_current_agent_idx` | `int` | Index into `_agents` for next decision |
 | `_pending_states` | `list[(int, Battle)]` | Buffered self-play states |
+| `manager` | `BattleManager \| None` | Turn-by-turn manager |
+| `completion` | `list[dict]` | Messages format (set by `render_completion`) |
+
+Battle objects are accessed via `state["_agents"][idx].battle`, not directly on state.
 
 ### Trajectory Step Keys
 
-Set by `add_trajectory_step`:
+Set by `add_trajectory_step`. All per-step metadata goes in the `extras` dict:
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `completion` | `str` | Raw LLM output (set by caller) |
+| `completion` | `list[dict]` | Messages format (list of role/content dicts), not plain string. Set by verifiers caller. |
+| `prompt` | `list[dict]` | Prompt messages (set by verifiers caller) |
+| `reward` | `float` | Terminal reward (set by `render_completion` via `_assign_rewards`) |
+| `advantage` | `float \| None` | Pre-set for non-uniform rewards (self-play); `None` otherwise |
+
+**`extras` dict keys** (set by `add_trajectory_step`):
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `agent_idx` | `int` | 0 (single mode) or 0/1 (self-play) |
+| `game_turn` | `int` | Battle turn number |
+| `force_switch` | `bool` | True if this was a forced switch |
 | `parsed_action` | `str` | poke-env command string |
 | `parse_failed` | `bool` | True if fallback was used |
-| `player_idx` | `int` | 0 (heuristic) or 0/1 (self-play) |
-| `force_switch` | `bool` | True if this was a forced switch |
-| `game_turn` | `int` | Battle turn number |
-| `step_reward` | `float` | Per-step reward (0.0 if no step_reward_fn) |
-| `reward` | `float` | Terminal reward (set by render_completion) |
+| `step_reward` | `float` | Per-step reward (only present if `step_reward_fn` set) |
 
 ### Standalone Testing Methods
 
 | Method | Description |
 |--------|-------------|
-| `async run_standalone(action_fn=None)` | Full battle via BattleAdapter. |
-| `async run_turn_by_turn(action_fn=None)` | Step-by-step via BattleManager. Uses `async with` for cleanup. |
+| `async run_standalone(adapter=None, action_fn=None)` | Full battle via BattleAdapter. Requires `adapter` arg. |
+| `async run_turn_by_turn(action_fn=None)` | Step-by-step via BattleManager. Uses `async with` for cleanup. Supports self-play. |
 
 ### Reward Methods (internal)
 
-| Method | Description |
-|--------|-------------|
-| `_compute_terminal_reward(won)` | Maps won → reward using config. |
-| `_assign_rewards(trajectory, won)` | Assigns terminal rewards to all steps. Handles self-play. |
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `_compute_terminal_reward(won)` | `(bool \| None) -> float` | Maps won/loss/draw to reward using config. |
+| `_assign_rewards(state)` | `(dict) -> None` | Assigns per-step `reward` and `advantage` from game outcome. Sets `advantage` only when rewards are non-uniform (self-play with a winner); leaves `None` for uniform cases so `score_group` fills cross-rollout normalized values. |
+
+---
+
+## PokemonRubric (`env.py`)
+
+Passthrough reward rubric + Pokemon-specific metrics. Extends `vf.Rubric` when verifiers is installed.
+
+Prevents `score_group` from overwriting env-computed rewards. Metrics are registered explicitly in `__init__` (framework does not auto-discover methods).
+
+### Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `_passthrough_reward_sync(state)` | `(dict) -> float` | Synchronous passthrough. Returns `state["reward"]` or `0.0`. |
+| `passthrough_reward(state)` | `async (dict) -> float` | Async wrapper registered via `add_reward_func`. |
+| `won(state)` | `async (dict) -> int` | Metric: `int(state["won"])` or `-1` if None. |
+| `game_turns(state)` | `async (dict) -> int` | Metric: `state["game_turn"]`. |
+| `parse_failures(state)` | `async (dict) -> int` | Metric: count of `extras["parse_failed"]` across trajectory. |
+
+---
+
+## _AgentContext (`env.py`)
+
+Per-agent state dataclass during a rollout. Data only, no behavior.
+
+```python
+@dataclass
+class _AgentContext:
+    agent_idx: int                       # 0 or 1
+    battle: Any = None                   # Current poke-env Battle object
+    steps: list = field(default_factory=list)           # This agent's trajectory steps
+    message_history: list = field(default_factory=list) # Conversation history (for future episodic mode)
+    parse_failure_count: int = 0
+    force_switch_count: int = 0
+```
 
 ---
 
@@ -308,7 +358,8 @@ TrajectoryLogger(output_path: str)
 
 | Function | Module | Description |
 |----------|--------|-------------|
-| `_passthrough_reward(state, **kwargs)` | `env.py` | Returns `state["reward"]`. For verifiers rubric passthrough. |
+| `load_environment(**kwargs)` | `__init__.py` | Verifiers env discovery entry point. Verifiers calls `importlib.import_module(env_id)` then `module.load_environment(**env_args)`. Returns `PokemonBattleEnv(**kwargs)`. |
+| `_passthrough_reward(state, **kwargs)` | `env.py` | Returns `state["reward"]`. Backward-compat module-level function; canonical path is `PokemonRubric.passthrough_reward`. |
 | `_next_username(prefix="ctrl")` | `players.py` | Atomic counter username: `f"{prefix}-{counter}-{time}"`. |
 | `default_action(battle)` | `adapter.py` | First available move, else first switch. |
 | `random_action(battle)` | `adapter.py` | Uniform random legal action. |

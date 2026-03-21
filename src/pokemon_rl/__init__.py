@@ -10,3 +10,13 @@ Architecture (4 Layers):
 """
 
 __version__ = "0.1.0"
+
+
+def load_environment(**kwargs):
+    """Verifiers env discovery entry point.
+
+    Verifiers uses importlib.import_module(env_id) then calls
+    module.load_environment(**env_args).
+    """
+    from pokemon_rl.env import PokemonBattleEnv
+    return PokemonBattleEnv(**kwargs)

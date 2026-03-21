@@ -95,4 +95,9 @@ bash scripts/run_tests_remote.sh nid008268 -v  # all tests
 
 ## Current Status
 
+Phase 4 verifiers integration complete. 235 tests (207 unit + 28 integration).
+`PokemonBattleEnv` inherits `vf.MultiTurnEnv` (conditional). Uses `play_mode`
+(not opponent_mode), `state["game_turn"]` (not turn), `step["extras"]["agent_idx"]`
+(not player_idx), `_assign_rewards(state)` (not trajectory, won).
+
 See `PROGRESS.md` for latest updates and `TODO.md` for roadmap.

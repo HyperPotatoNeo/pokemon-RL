@@ -1,0 +1,3 @@
+[submodule "vendor/pokechamp"]
+	path = vendor/pokechamp
+	url = https://github.com/sethkarten/pokechamp.git

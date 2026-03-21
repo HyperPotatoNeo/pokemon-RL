@@ -6,6 +6,8 @@ Pokemon Showdown multi-agent RL environment for [prime-rl](https://github.com/Hy
 
 ```
 Layer 4: PokemonBattleEnv   — LLM harness (verifiers hooks, prompts, rewards)
+         PokemonRubric      — Passthrough reward + game metrics
+         _AgentContext       — Per-agent state during rollout
 Layer 3: StateTranslator    — Battle state <-> LLM text (pokechamp format)
 Layer 2: BattleManager      — Turn-by-turn battle orchestration
          BattleAdapter      — Full-battle mode (callback-driven)
@@ -15,7 +17,7 @@ Layer 1: ShowdownEngine     — Node.js Pokemon Showdown process manager
 
 **BattleManager** is the general battle harness. It knows Pokemon, players, turns, and game state. It does NOT know about LLMs, prompts, tokens, or rewards.
 
-**PokemonBattleEnv** is the LLM harness on top. It translates battle states to text prompts, parses text to actions, and assigns rewards. Any LLM-in-the-loop use goes through here.
+**PokemonBattleEnv** is the LLM harness on top. Inherits from `vf.MultiTurnEnv` (when verifiers is installed) and implements 7 hook methods: `setup_state`, `get_prompt_messages`, `add_trajectory_step`, `render_completion`, `game_over` (@vf.stop), `cleanup_battle` (@vf.cleanup), `env_response`. Translates battle states to text prompts, parses text to actions, and assigns rewards with per-step advantage pre-setting for self-play.
 
 See [docs/architecture.md](docs/architecture.md) for detailed data flow and design decisions.
 
@@ -30,24 +32,31 @@ See [docs/architecture.md](docs/architecture.md) for detailed data flow and desi
 ### Install
 
 ```bash
-git clone https://github.com/HyperPotatoNeo/pokemon-RL.git
+git clone --recurse-submodules https://github.com/HyperPotatoNeo/pokemon-RL.git
 cd pokemon-RL
 
 # Create venv and install
 python -m venv .venv
 source .venv/bin/activate
 
-# Install pokechamp (brings poke-env + transitive deps like torch)
-pip install -e /path/to/pokechamp
+# Install pokechamp submodule (brings poke-env fork + transitive deps)
+pip install -e vendor/pokechamp
+
+# Symlink for pokechamp_io data cache (hardcoded relative paths)
+ln -sf vendor/pokechamp/poke_env poke_env
 
 # Install pokemon-rl with test deps
 pip install -e ".[test]"
+
+# Optional: install verifiers for full RL pipeline integration
+pip install "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@209774a"
 ```
 
 Or with `uv` (faster):
 ```bash
 uv venv --python 3.12 .venv && source .venv/bin/activate
-uv pip install -e /path/to/pokechamp
+uv pip install -e vendor/pokechamp
+ln -sf vendor/pokechamp/poke_env poke_env
 uv pip install -e ".[test]"
 ```
 
@@ -73,34 +82,43 @@ For NERSC Perlmutter deployment, see [docs/deployment.md](docs/deployment.md).
 ## Usage
 
 ```python
-# Turn-by-turn with heuristic opponent
+# Single agent vs heuristic opponent
 from pokemon_rl.env import PokemonBattleEnv
-from pokemon_rl.translator import StateTranslator
 from pokemon_rl.adapter import random_action
 
 env = PokemonBattleEnv(
-    translator=StateTranslator(format_style="simple"),
-    control_mode="turn_by_turn",
-    port=8000,
     battle_format="gen1randombattle",
-    reward_win=1.0,
-    reward_loss=0.0,
+    port=8000,
+    play_mode="single",
+    observation_format="simple",
 )
 result = await env.run_turn_by_turn(action_fn=random_action)
 # result: {"won": True, "turns": 23, "reward": 1.0, "trajectory": [...]}
 ```
 
 ```python
-# Self-play
+# Self-play (both agents train)
 env = PokemonBattleEnv(
-    translator=StateTranslator(format_style="simple"),
-    control_mode="turn_by_turn",
-    opponent_mode="self_play",
-    reward_win=1.0,
-    reward_loss=-1.0,  # symmetric rewards
+    battle_format="gen1randombattle",
+    play_mode="self_play",
+    observation_format="simple",
 )
 result = await env.run_turn_by_turn(action_fn=random_action)
-# P1 wins: P1 steps get 1.0, P2 steps get -1.0
+# P0 wins: P0 steps get reward_win, P1 steps get reward_loss
+# Advantages pre-set with config-derived baseline
+```
+
+```python
+# Verifiers integration (prime-rl orchestrator)
+# In TOML config:
+# [[orchestrator.env]]
+# id = "pokemon_rl"
+# [orchestrator.env.args]
+# battle_format = "gen1randombattle"
+# play_mode = "self_play"
+# [orchestrator]
+# trajectory_strategy = "branching"
+# rollouts_per_example = 4
 ```
 
 See [docs/rewards.md](docs/rewards.md) for the configurable reward system.
@@ -111,7 +129,7 @@ See [docs/rewards.md](docs/rewards.md) for the configurable reward system.
 |----------|----------|
 | [docs/architecture.md](docs/architecture.md) | 4-layer design, data flow diagrams, file map |
 | [docs/concurrency.md](docs/concurrency.md) | POKE_LOOP bridging, cross-loop patterns, relay queue |
-| [docs/rewards.md](docs/rewards.md) | Configurable rewards, step rewards, self-play assignment |
+| [docs/rewards.md](docs/rewards.md) | Configurable rewards, advantage pre-setting, self-play assignment |
 | [docs/selfplay.md](docs/selfplay.md) | Self-play mechanics, force-switch handling, hooks buffering |
 | [docs/testing.md](docs/testing.md) | Test philosophy, markers, running tests, mock patterns |
 | [docs/deployment.md](docs/deployment.md) | NERSC Perlmutter setup, containers, multi-node battles |
@@ -119,7 +137,7 @@ See [docs/rewards.md](docs/rewards.md) for the configurable reward system.
 
 ## Project Status
 
-**149 tests** (122 unit + 27 integration), all passing.
+**235 tests** (207 unit + 28 integration), all passing. Phase 4 verifiers integration complete.
 
 See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 
@@ -129,7 +147,7 @@ See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 
 - **[pokechamp](https://github.com/HyperPotatoNeo/pokechamp)** — LLM Pokemon battle agent. pokemon-rl uses pokechamp for two things: (1) the `"pokechamp_io"` prompt format in `StateTranslator`, which calls pokechamp's `state_translate` + `LocalSim` to produce rich prompts with damage calculations, and (2) as the installation vehicle for poke-env and its transitive dependencies (torch, etc.). Installing pokechamp via `pip install -e` puts poke-env into site-packages where it's importable normally.
 
-- **[metamon](https://github.com/hsahovic/metamon)** — Pokemon battle baselines. The multi-node battle scripts (`scripts/_multinode_p1.py`, `_multinode_p2.py`) use metamon's `EmeraldKaizo` baseline for cross-node testing. metamon provides heuristic opponents stronger than poke-env's built-in `RandomPlayer` and `MaxBasePowerPlayer`. Not a runtime dependency for pokemon-rl itself.
+- **[verifiers](https://github.com/PrimeIntellect-ai/verifiers)** (optional) — RL environment framework for prime-rl. When installed, `PokemonBattleEnv` inherits from `vf.MultiTurnEnv` and integrates with the orchestrator's scoring pipeline. `PokemonRubric` provides passthrough rewards and game metrics. Without verifiers, the env works standalone for testing.
 
 - **[Pokemon Showdown](https://github.com/smogon/pokemon-showdown)** — Node.js battle server. `ShowdownEngine` manages the server process. Battles run locally via WebSocket (no internet connection needed). Requires Node.js.
 

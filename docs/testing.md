@@ -1,6 +1,6 @@
 # Testing
 
-149 tests (122 unit + 27 integration). All tests follow the "no fall-through" philosophy.
+235 tests (207 unit + 28 integration). All tests follow the "no fall-through" philosophy.
 
 ## Test Philosophy: No Fall-Through Passes
 
@@ -25,6 +25,7 @@ A test that only checks `assert result is not None` passes by accident if the fu
 - `@requires_poke_env` — skips if poke-env not importable
 - `@requires_pokechamp` — skips if pokechamp not importable
 - `@requires_showdown` — skips if Showdown not running on SHOWDOWN_PORT
+- `@requires_verifiers` — skips if verifiers framework not importable
 
 ## Running Tests
 
@@ -49,15 +50,17 @@ bash scripts/run_tests_remote.sh nid008268 -m unit -v
 | `tests/test_players.py` | 12 unit, 6 integration | Atomic usernames, queue mechanics (state/action/sentinel/timeout), ControllablePlayer creation, opponent factory |
 | `tests/test_battle.py` | 16 unit, 5 integration | BattleManager state machine guards, close/cleanup, exception propagation, sentinel handling, full heuristic + selfplay games, concurrent battles |
 | `tests/test_translator.py` | 21 unit, 2 integration | parse_action (move/switch/dynamax/nested JSON/garbage), _extract_last_json, fallback action randomness, simple prompt structure, format validation, pokechamp_io prompts |
-| `tests/test_env.py` | 30 unit, 8 integration | State machine, reward computation (win/loss/draw/truncation/custom/selfplay), step rewards, parse failure tracking, manager cleanup, full game loops (heuristic + selfplay), hooks integration, trajectory integrity |
-| `tests/test_hooks.py` | 24 unit | Hooks cycle (heuristic + selfplay), StrictMockSelfplayManager contract enforcement, setup_state type verification, advance buffering, standalone contract |
+| `tests/test_env.py` | 33 unit, 8 integration | State machine, reward computation (win/loss/draw/truncation/custom/selfplay), step rewards, parse failure tracking, manager cleanup, full game loops (heuristic + selfplay), hooks integration, trajectory integrity |
+| `tests/test_hooks.py` | 23 unit | Hooks cycle (heuristic + selfplay), StrictMockSelfplayManager contract enforcement, setup_state type verification, advance buffering, standalone contract |
+| `tests/test_phase4_unit.py` | 88 unit | Phase 4 verifiers integration: PokemonRubric, _AgentContext, advantage pre-setting, game_over/@vf.stop, cleanup_battle/@vf.cleanup, env_response, conditional verifiers inheritance |
+| `tests/test_phase4_integration.py` | 16 integration | Phase 4 end-to-end: full games through verifiers pipeline, rubric scoring, advantage flow, self-play with verifiers |
 | `tests/test_data.py` | 7 unit | TrajectoryLogger create/roundtrip/multi-line/step, concurrent writes (4 threads) |
 
 ## Mock Patterns
 
 ### MockBattle (test_translator.py, test_hooks.py)
 
-Minimal mock that works without poke-env. Key: it must NOT be a tuple (tests verify `state["battle"]` is not a tuple — a real bug that was caught).
+Minimal mock that works without poke-env. Key: it must NOT be a tuple (tests verify `state["_agents"][idx].battle` is not a tuple — a real bug that was caught).
 
 ```python
 class MockBattle:

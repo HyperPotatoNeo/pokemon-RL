@@ -11,10 +11,14 @@ pokemon-rl uses a 4-layer architecture. Each layer depends only on layers below 
                                 |
                     +-----------v-----------+
               L4    |   PokemonBattleEnv    |  env.py
-                    |  setup_state          |  4 hooks matching MultiTurnEnv
+                    |  setup_state          |  7 hooks matching MultiTurnEnv
                     |  get_prompt_messages   |  Configurable rewards
                     |  add_trajectory_step   |  Parse failure tracking
                     |  render_completion     |  Step-level reward callback
+                    |  game_over (@vf.stop)  |  PokemonRubric (verifiers)
+                    |  cleanup_battle        |  Advantage pre-setting
+                    |    (@vf.cleanup)       |
+                    |  env_response          |
                     +-----------+-----------+
                                 |
                     +-----------v-----------+
@@ -46,7 +50,7 @@ L1  |   ShowdownEngine   |  engine.py
     +--------------------+
 ```
 
-## Data Flow: Heuristic Mode
+## Data Flow: Single-Agent Mode
 
 One player controlled externally, opponent auto-responds.
 
@@ -72,7 +76,8 @@ One player controlled externally, opponent auto-responds.
    └─ Appends step to trajectory
 
 4. render_completion
-   ├─ _assign_rewards(trajectory, won) using reward_win/loss/draw
+   ├─ _assign_rewards(state) using reward_win/loss/draw
+   ├─ Sets state["completion"]
    └─ Writes metrics dict to state
 ```
 
@@ -109,7 +114,7 @@ Both players controlled externally. See [selfplay.md](selfplay.md) for details.
 | `src/pokemon_rl/players.py` | L2 | ~215 | ControllablePlayer (queue-based choose_move), `create_opponent` factory. Atomic username counter. Zombie loop prevention (consecutive timeout → forfeit). |
 | `src/pokemon_rl/battle.py` | L2 | ~440 | BattleManager: turn-by-turn orchestration, self-play relay, cross-loop bridge, `close()` + async context manager. Exception propagation from battle future. |
 | `src/pokemon_rl/translator.py` | L3 | ~260 | StateTranslator: "simple" and "pokechamp_io" prompt formats, `_extract_last_json` (nested-JSON-aware), `parse_action` with format-aware mechanic validation (dynamax/terastallize). Random fallback action. |
-| `src/pokemon_rl/env.py` | L4 | ~580 | PokemonBattleEnv: 4 MultiTurnEnv hooks, configurable rewards (`reward_win`/`loss`/`draw`), `step_reward_fn` callback, `_compute_terminal_reward` + `_assign_rewards` (single source of truth), standalone test modes. |
+| `src/pokemon_rl/env.py` | L4 | ~780 | PokemonBattleEnv: 7 MultiTurnEnv hooks (incl. game_over/@vf.stop, cleanup_battle/@vf.cleanup, env_response), PokemonRubric, _AgentContext, _build_agent_prompt, configurable rewards (`reward_win`/`loss`/`draw`), `step_reward_fn` callback, `_compute_terminal_reward` + `_assign_rewards` (single source of truth), conditional verifiers inheritance, advantage pre-setting, standalone test modes. |
 | `src/pokemon_rl/data.py` | util | ~70 | TrajectoryLogger: JSONL append with atomic `os.write` for concurrent safety. |
 
 ## Key Design Decisions

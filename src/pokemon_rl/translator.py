@@ -135,17 +135,83 @@ class StateTranslator:
         Uses random instead of max-base-power to prevent reward hacking:
         a model that always outputs garbage would otherwise get the
         strongest heuristic move for free via this fallback.
+
+        Returns a BattleOrder subclass with robust .message (handles both
+        real poke-env types and mock objects used in testing).
         """
         from poke_env.player.battle_order import BattleOrder
 
+        class _RobustOrder(BattleOrder):
+            """BattleOrder with fallback message for non-poke-env types."""
+            @property
+            def message(self) -> str:
+                msg = super().message
+                if msg:
+                    return msg
+                if hasattr(self.order, "id"):
+                    return f"/choose move {self.order.id}"
+                if hasattr(self.order, "species"):
+                    return f"/choose switch {self.order.species}"
+                return "/choose default"
+
         actions = []
         for m in battle.available_moves:
-            actions.append(BattleOrder(m))
+            actions.append(_RobustOrder(m))
         for p in battle.available_switches:
-            actions.append(BattleOrder(p))
+            actions.append(_RobustOrder(p))
         if actions:
             return random.choice(actions)
         return BattleOrder(None)
+
+    # ------------------------------------------------------------------
+    # Completion text extraction (Phase 4: Messages → str)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_completion_text(messages: Any) -> str:
+        """Extract text from a completion, handling both string and Messages format.
+
+        In verifiers, add_model_response creates a TrajectoryStep where
+        'completion' is a Messages list (list of dicts with role/content),
+        not a plain string. This method converts to string for parse_action.
+
+        Args:
+            messages: Either a string (legacy) or a list of message dicts
+                     (verifiers Messages format).
+
+        Returns:
+            The extracted text string.
+        """
+        if isinstance(messages, str):
+            return messages
+        if isinstance(messages, list):
+            # Extract last assistant message content
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    return msg.get("content") or ""
+            # No assistant message — concatenate all content
+            return " ".join(
+                m.get("content", "") for m in messages if isinstance(m, dict)
+            )
+        return str(messages)
+
+    @staticmethod
+    def extract_user_content(messages: Any) -> str:
+        """Extract user content from a Messages list.
+
+        Used for recording conversation history in _AgentContext.
+
+        Args:
+            messages: List of message dicts (Messages format).
+
+        Returns:
+            The user message content, or empty string if not found.
+        """
+        if isinstance(messages, list):
+            for msg in messages:
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    return msg.get("content", "")
+        return ""
 
     # ------------------------------------------------------------------
     # Format implementations
