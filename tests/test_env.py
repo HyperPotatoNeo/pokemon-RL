@@ -34,7 +34,9 @@ class TestEnvStateMachine:
         assert state["game_over"] is False
         assert state["turn"] == 0
         assert state["decision_count"] == 0
-        assert state["winner"] is None
+        assert state["won"] is None
+        assert state["truncated"] is False
+        assert state["parse_failure_count"] == 0
         assert state["battle"] is None
         assert state["manager"] is None
 
@@ -65,15 +67,17 @@ class TestEnvStateMachine:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_get_prompt_max_turns_triggers_game_over(self):
-        """Reaching max_game_turns must set game_over and return None."""
+        """Reaching max_game_turns must set game_over, truncated, and return None."""
         from pokemon_rl.env import PokemonBattleEnv
 
         env = PokemonBattleEnv(adapter=None, translator=None, max_game_turns=5)
-        state = {"game_over": False, "turn": 5, "battle": None}
+        state = {"game_over": False, "turn": 5, "battle": None, "won": None}
 
         result = await env.get_prompt_messages(state)
         assert result is None
         assert state["game_over"] is True, "Should set game_over flag"
+        assert state["truncated"] is True, "Should set truncated flag (C2 fix)"
+        assert state["won"] is None, "Truncation should not set won=False"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -308,7 +312,7 @@ class TestEnvStateMachine:
 
         env = PokemonBattleEnv(adapter=None, translator=None)
         state = {
-            "won": None, "turn": 5, "decision_count": 5,
+            "won": None, "truncated": False, "turn": 5, "decision_count": 5,
             "trajectory": [{"player_idx": 0}],
         }
         await env.render_completion(state)
@@ -326,11 +330,11 @@ class TestEnvStateMachine:
         env = PokemonBattleEnv(adapter=None, translator=None)
 
         none_state = {
-            "won": None, "turn": 5, "decision_count": 5,
+            "won": None, "truncated": False, "turn": 5, "decision_count": 5,
             "trajectory": [{"player_idx": 0}],
         }
         loss_state = {
-            "won": False, "turn": 5, "decision_count": 5,
+            "won": False, "truncated": False, "turn": 5, "decision_count": 5,
             "trajectory": [{"player_idx": 0}],
         }
 
@@ -368,6 +372,344 @@ class TestEnvStateMachine:
         env = PokemonBattleEnv(adapter=None, translator=None)
         with pytest.raises(RuntimeError, match="adapter"):
             await env.run_standalone()
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_render_completion_draw_uses_reward_draw(self):
+        """N1: won=None uses configurable reward_draw (default 0.0)."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+        state = {
+            "won": None, "truncated": True, "turn": 200, "decision_count": 200,
+            "trajectory": [{"player_idx": 0}, {"player_idx": 0}],
+        }
+        await env.render_completion(state)
+        assert state["reward"] == 0.0, (
+            f"Default reward_draw should be 0.0, got {state['reward']}"
+        )
+        assert state["metrics"]["truncated"] == 1
+        assert state["metrics"]["won"] == -1
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_render_completion_custom_draw_reward(self):
+        """N1: Custom reward_draw=0.5 gives 0.5 for won=None."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None, reward_draw=0.5)
+        state = {
+            "won": None, "truncated": True, "turn": 200, "decision_count": 200,
+            "trajectory": [{"player_idx": 0}],
+        }
+        await env.render_completion(state)
+        assert state["reward"] == 0.5, (
+            f"Custom reward_draw=0.5 should give 0.5, got {state['reward']}"
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_render_completion_custom_terminal_rewards(self):
+        """N1: Custom reward_win=10, reward_loss=-10, reward_draw=0.5."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(
+            adapter=None, translator=None,
+            reward_win=10.0, reward_loss=-10.0, reward_draw=0.5,
+        )
+
+        win_state = {
+            "won": True, "truncated": False, "turn": 10, "decision_count": 10,
+            "trajectory": [{"player_idx": 0}],
+        }
+        loss_state = {
+            "won": False, "truncated": False, "turn": 10, "decision_count": 10,
+            "trajectory": [{"player_idx": 0}],
+        }
+        draw_state = {
+            "won": None, "truncated": True, "turn": 200, "decision_count": 200,
+            "trajectory": [{"player_idx": 0}],
+        }
+
+        await env.render_completion(win_state)
+        await env.render_completion(loss_state)
+        await env.render_completion(draw_state)
+
+        assert win_state["reward"] == 10.0
+        assert loss_state["reward"] == -10.0
+        assert draw_state["reward"] == 0.5
+        # All three must be distinguishable
+        rewards = {win_state["reward"], loss_state["reward"], draw_state["reward"]}
+        assert len(rewards) == 3, f"All 3 rewards must be distinct: {rewards}"
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_selfplay_custom_rewards_no_inversion_bug(self):
+        """N1: Self-play with reward_win=1, reward_loss=-1.
+
+        CRITICAL: P2 should get reward_loss (-1.0), NOT 1.0 - 1.0 = 0.0.
+        The old code used `1.0 - reward` which only works for [0,1].
+        """
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(
+            translator=None,
+            control_mode="turn_by_turn",
+            opponent_mode="self_play",
+            reward_win=1.0,
+            reward_loss=-1.0,
+        )
+
+        state = {
+            "won": True, "truncated": False, "turn": 10, "decision_count": 20,
+            "trajectory": [
+                {"player_idx": 0},
+                {"player_idx": 1},
+            ],
+        }
+        await env.render_completion(state)
+
+        assert state["trajectory"][0]["reward"] == 1.0, "P1 (winner) should get 1.0"
+        assert state["trajectory"][1]["reward"] == -1.0, (
+            f"P2 (loser) should get -1.0, got {state['trajectory'][1]['reward']}. "
+            f"Old code used `1.0 - reward` which gives 0.0 — wrong for asymmetric rewards."
+        )
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_selfplay_draw_both_get_draw_reward(self):
+        """N1: Self-play draw gives both players reward_draw."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(
+            translator=None,
+            control_mode="turn_by_turn",
+            opponent_mode="self_play",
+            reward_draw=0.5,
+        )
+        state = {
+            "won": None, "truncated": True, "turn": 200, "decision_count": 400,
+            "trajectory": [
+                {"player_idx": 0},
+                {"player_idx": 1},
+            ],
+        }
+        await env.render_completion(state)
+
+        assert state["trajectory"][0]["reward"] == 0.5
+        assert state["trajectory"][1]["reward"] == 0.5
+
+    @pytest.mark.unit
+    def test_compute_terminal_reward_defaults(self):
+        """N1: _compute_terminal_reward with default config."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+        assert env._compute_terminal_reward(True) == 1.0
+        assert env._compute_terminal_reward(False) == 0.0
+        assert env._compute_terminal_reward(None) == 0.0
+
+    @pytest.mark.unit
+    def test_compute_terminal_reward_custom(self):
+        """N1: _compute_terminal_reward with custom config."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(
+            adapter=None, translator=None,
+            reward_win=10.0, reward_loss=-10.0, reward_draw=0.5,
+        )
+        assert env._compute_terminal_reward(True) == 10.0
+        assert env._compute_terminal_reward(False) == -10.0
+        assert env._compute_terminal_reward(None) == 0.5
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_all_paths_use_compute_terminal_reward(self):
+        """N1 CRITICAL: All reward paths must produce identical results.
+
+        Tests that _assign_rewards gives same output regardless of
+        self-play vs heuristic for equivalent outcomes.
+        """
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env_h = PokemonBattleEnv(
+            adapter=None, translator=None,
+            reward_win=5.0, reward_loss=-5.0, reward_draw=0.5,
+        )
+        env_sp = PokemonBattleEnv(
+            translator=None, control_mode="turn_by_turn",
+            opponent_mode="self_play",
+            reward_win=5.0, reward_loss=-5.0, reward_draw=0.5,
+        )
+
+        for won in [True, False, None]:
+            h_traj = [{"player_idx": 0}]
+            h_reward = env_h._assign_rewards(h_traj, won)
+            sp_traj = [{"player_idx": 0}, {"player_idx": 1}]
+            sp_reward = env_sp._assign_rewards(sp_traj, won)
+
+            # P1 reward must match in both modes
+            assert h_traj[0]["reward"] == sp_traj[0]["reward"], (
+                f"won={won}: heuristic P0 reward {h_traj[0]['reward']} != "
+                f"selfplay P0 reward {sp_traj[0]['reward']}"
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_step_reward_default_zero(self):
+        """N1: Default step_reward_fn=None → step_reward=0.0."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+
+        class FakeBattle:
+            turn = 1
+            force_switch = False
+
+        class FakeTranslator:
+            def parse_action(self, text, battle):
+                return None
+            def get_fallback_action(self, battle):
+                class O:
+                    message = "/choose default"
+                return O()
+
+        env.translator = FakeTranslator()
+        state = {
+            "trajectory": [], "turn": 0, "decision_count": 0,
+            "battle": FakeBattle(), "manager": None,
+            "parse_failure_count": 0,
+        }
+        await env.add_trajectory_step(state, {"completion": "x"})
+        assert state["trajectory"][0]["step_reward"] == 0.0
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_step_reward_fn_called(self):
+        """N1: Custom step_reward_fn is called with correct args."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        calls = []
+        def spy(before, after, action, idx):
+            calls.append((before, after, action, idx))
+            return 0.42
+
+        env = PokemonBattleEnv(
+            adapter=None, translator=None, step_reward_fn=spy,
+        )
+
+        class FakeBattle:
+            turn = 1
+            force_switch = False
+
+        class FakeTranslator:
+            def parse_action(self, text, battle):
+                return None
+            def get_fallback_action(self, battle):
+                class O:
+                    message = "/choose default"
+                return O()
+
+        env.translator = FakeTranslator()
+        battle = FakeBattle()
+        state = {
+            "trajectory": [], "turn": 0, "decision_count": 0,
+            "battle": battle, "manager": None,
+            "parse_failure_count": 0,
+        }
+        await env.add_trajectory_step(state, {"completion": "x"})
+
+        assert len(calls) == 1
+        assert calls[0][0] is battle  # battle_before
+        assert calls[0][3] == 0  # player_idx
+        assert state["trajectory"][0]["step_reward"] == 0.42
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_step_reward_separate_from_terminal(self):
+        """N1: step_reward and terminal reward are independent fields."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(
+            adapter=None, translator=None,
+            reward_win=1.0, step_reward_fn=lambda *_: 0.1,
+        )
+        state = {
+            "won": True, "truncated": False, "turn": 5, "decision_count": 5,
+            "trajectory": [{"player_idx": 0, "step_reward": 0.1}],
+        }
+        await env.render_completion(state)
+
+        assert state["trajectory"][0]["reward"] == 1.0  # terminal
+        assert state["trajectory"][0]["step_reward"] == 0.1  # unchanged
+
+    @pytest.mark.unit
+    def test_passthrough_reward_allows_negative(self):
+        """I2: _passthrough_reward must not zero out negative rewards."""
+        from pokemon_rl.env import _passthrough_reward
+
+        assert _passthrough_reward({"reward": -1.0}) == -1.0
+        assert _passthrough_reward({"reward": 0}) == 0
+        assert _passthrough_reward({"reward": 0.0}) == 0.0
+        assert _passthrough_reward({}) == 0.0
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_parse_failure_tracked_in_state(self):
+        """C1 fix: Parse failures must be tracked in trajectory and state."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+
+        # Need a mock translator that returns None from parse_action
+        class FailTranslator:
+            def parse_action(self, text, battle):
+                return None
+
+            def get_fallback_action(self, battle):
+                class FakeOrder:
+                    message = "/choose default"
+                return FakeOrder()
+
+            def battle_to_prompt(self, battle):
+                return [
+                    {"role": "system", "content": "x"},
+                    {"role": "user", "content": "y"},
+                ]
+
+        env.translator = FailTranslator()
+
+        class FakeBattle:
+            turn = 1
+            force_switch = False
+
+        state = {
+            "trajectory": [], "turn": 0, "decision_count": 0,
+            "battle": FakeBattle(), "manager": None,
+            "parse_failure_count": 0,
+        }
+        await env.add_trajectory_step(state, {"completion": "garbage"})
+        assert state["trajectory"][0]["parse_failed"] is True
+        assert state["parse_failure_count"] == 1
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_setup_state_cleans_up_old_manager(self):
+        """H7 fix: setup_state must close any existing manager."""
+        from pokemon_rl.env import PokemonBattleEnv
+
+        env = PokemonBattleEnv(adapter=None, translator=None)
+
+        close_called = False
+
+        class OldManager:
+            async def close(self):
+                nonlocal close_called
+                close_called = True
+
+        state = {"manager": OldManager()}
+        await env.setup_state(state)
+        assert close_called, "Old manager's close() should be called (H7 fix)"
 
 
 # ---- Integration tests: full game loop ----

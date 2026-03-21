@@ -54,7 +54,8 @@ class CallbackPlayer:
         from poke_env.player.player import Player
 
         if account_name is None:
-            account_name = f"cbp-{int(time.time() * 1000) % 100000}-{random.randint(0, 999)}"
+            from pokemon_rl.players import _next_username
+            account_name = _next_username("cbp")
 
         class _CallbackPlayerImpl(Player):
             def __init__(self, cb, **kwargs):
@@ -138,15 +139,19 @@ class BattleAdapter:
     Args:
         port: Showdown server port (default 8000)
         battle_format: Pokemon Showdown format string
+        server_host: Showdown server hostname (default "localhost",
+            use node hostname for cross-node play)
     """
 
     def __init__(
         self,
         port: int = 8000,
         battle_format: str = "gen1randombattle",
+        server_host: str = "localhost",
     ):
         self.port = port
         self.battle_format = battle_format
+        self.server_host = server_host
         self._server_config = None
 
     def _get_server_config(self):
@@ -155,7 +160,7 @@ class BattleAdapter:
             from poke_env.ps_client.server_configuration import ServerConfiguration
 
             self._server_config = ServerConfiguration(
-                f"localhost:{self.port}",
+                f"{self.server_host}:{self.port}",
                 "https://play.pokemonshowdown.com/action.php?",
             )
         return self._server_config
@@ -200,7 +205,8 @@ class BattleAdapter:
         )
 
         # Create opponent
-        opp_name = f"opp-{int(time.time() * 1000) % 100000}-{random.randint(0, 999)}"
+        from pokemon_rl.players import _next_username
+        opp_name = _next_username("opp")
         opp_kwargs = dict(
             battle_format=self.battle_format,
             server_configuration=server_config,

@@ -51,7 +51,7 @@ Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 
 The project has its own `.venv`. Setup installs:
 1. **pokechamp** from local path — brings poke_env, torch, and all transitive deps
-2. **pokemon-rl** itself — numpy + test deps
+2. **pokemon-rl** itself — test deps (pytest, pytest-asyncio)
 
 ```bash
 # On compute node (see scripts/setup_node.sh):
@@ -62,8 +62,7 @@ uv pip install -e ".[test]"            # our package
 ## Test Markers
 
 - `@pytest.mark.unit` — No external deps. Runs anywhere with the venv active.
-- `@pytest.mark.integration` — Needs Showdown server + poke-env.
-- `@pytest.mark.gpu` — Needs GPU + vLLM (compute node with GPU).
+- `@pytest.mark.integration` — Needs Showdown server + poke-env (compute node).
 
 ## Running Tests
 

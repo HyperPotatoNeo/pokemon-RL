@@ -174,6 +174,58 @@ class TestBattleManagerStateMachine:
         )
         assert result[0] == (0, "valid_battle")
 
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_close_cleans_up(self):
+        """H2 fix: close() must clean up all resources."""
+        from pokemon_rl.battle import BattleManager
+
+        mgr = BattleManager(port=9999)
+        mgr._started = True
+        mgr._player = "fake_player"
+        mgr._opponent = "fake_opponent"
+
+        await mgr.close()
+
+        assert mgr._player is None
+        assert mgr._opponent is None
+        assert mgr._finished is True
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_close_idempotent(self):
+        """close() can be called multiple times safely."""
+        from pokemon_rl.battle import BattleManager
+
+        mgr = BattleManager(port=9999)
+        await mgr.close()
+        await mgr.close()  # Should not raise
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_async_context_manager(self):
+        """BattleManager can be used as async context manager."""
+        from pokemon_rl.battle import BattleManager
+
+        async with BattleManager(port=9999) as mgr:
+            assert mgr is not None
+        assert mgr._finished is True
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_check_battle_future_propagates_exception(self):
+        """M12 fix: _check_battle_future propagates exceptions."""
+        from concurrent.futures import Future
+        from pokemon_rl.battle import BattleManager
+
+        mgr = BattleManager(port=9999)
+        f = Future()
+        f.set_exception(RuntimeError("test error"))
+        mgr._battle_future = f
+
+        with pytest.raises(RuntimeError, match="Battle coroutine failed"):
+            mgr._check_battle_future()
+
 
 # ---- Integration tests: real Showdown ----
 

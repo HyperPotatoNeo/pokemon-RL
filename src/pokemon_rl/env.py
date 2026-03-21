@@ -39,7 +39,7 @@ def _passthrough_reward(state: dict, **kwargs) -> float:
     Returns pre-computed reward from render_completion.
     Prevents verifiers' rubric from overwriting our rewards.
     """
-    return state.get("reward", 0.0) or 0.0
+    return state.get("reward", 0.0)
 
 
 class PokemonBattleEnv:
@@ -67,6 +67,14 @@ class PokemonBattleEnv:
         port: Showdown server port (for turn_by_turn mode)
         battle_format: Pokemon format string (for turn_by_turn mode)
         server_host: Showdown host (for cross-node play)
+        reward_win: Terminal reward for wins (default 1.0)
+        reward_loss: Terminal reward for losses (default 0.0)
+        reward_draw: Terminal reward for draws/truncations/crashes (default 0.0)
+        step_reward_fn: Optional per-step reward callback.
+            Signature: (battle_before, battle_after, action, player_idx) -> float.
+            Called after each game advancement. battle_after is None on game-over
+            or in self-play (where the turn hasn't resolved yet). Result stored
+            as step["step_reward"], separate from terminal step["reward"].
     """
 
     def __init__(
@@ -80,6 +88,10 @@ class PokemonBattleEnv:
         port: int = 8000,
         battle_format: str = "gen1randombattle",
         server_host: str = "localhost",
+        reward_win: float = 1.0,
+        reward_loss: float = 0.0,
+        reward_draw: float = 0.0,
+        step_reward_fn: Callable | None = None,
     ):
         self.adapter = adapter
         self.translator = translator
@@ -90,6 +102,10 @@ class PokemonBattleEnv:
         self.port = port
         self.battle_format = battle_format
         self.server_host = server_host
+        self.reward_win = reward_win
+        self.reward_loss = reward_loss
+        self.reward_draw = reward_draw
+        self.step_reward_fn = step_reward_fn
 
         if control_mode not in ("full_battle", "turn_by_turn"):
             raise ValueError(f"Unknown control_mode: {control_mode}")
@@ -111,11 +127,21 @@ class PokemonBattleEnv:
         Called once at the start of each rollout.
         For turn_by_turn mode, creates a BattleManager and starts the battle.
         """
+        # Clean up any previous manager (H7: prevents leak on retry)
+        old_manager = state.get("manager")
+        if old_manager is not None and hasattr(old_manager, 'close'):
+            try:
+                await old_manager.close()
+            except Exception:
+                pass
+
         state["trajectory"] = []
         state["game_over"] = False
         state["turn"] = 0
         state["decision_count"] = 0  # includes force-switches
-        state["winner"] = None
+        state["truncated"] = False
+        state["won"] = None
+        state["parse_failure_count"] = 0
         state["battle"] = None
         state["manager"] = None
 
@@ -157,6 +183,10 @@ class PokemonBattleEnv:
             return None
         if state["turn"] >= self.max_game_turns:
             state["game_over"] = True
+            state["truncated"] = True
+            # Truncation is not a loss — mark as draw/unknown
+            if "won" not in state or state["won"] is None:
+                state["won"] = None
             return None
 
         battle = state.get("battle")
@@ -184,6 +214,10 @@ class PokemonBattleEnv:
             action = self.translator.parse_action(response_text, battle)
             if action is None:
                 action = self.translator.get_fallback_action(battle)
+                trajectory_step["parse_failed"] = True
+                state["parse_failure_count"] = state.get("parse_failure_count", 0) + 1
+            else:
+                trajectory_step["parse_failed"] = False
             trajectory_step["parsed_action"] = (
                 action.message if hasattr(action, "message") else str(action)
             )
@@ -212,10 +246,14 @@ class PokemonBattleEnv:
         state["decision_count"] += 1
 
         # Advance game state
+        battle_before = battle  # Capture for step_reward_fn
         manager = state.get("manager")
+        next_battle = None
         if manager is not None and action is not None:
             if self.opponent_mode == "self_play":
                 await self._advance_selfplay(state, action, player_idx)
+                # In self-play, post-resolution state isn't available per-player
+                next_battle = None
             else:
                 next_battle, done = await manager.step(action)
                 state["battle"] = next_battle
@@ -225,6 +263,14 @@ class PokemonBattleEnv:
                     state["won"] = result["won"]
                 elif next_battle is not None:
                     state["turn"] = next_battle.turn
+
+        # Step-level reward (optional, separate from terminal reward)
+        if self.step_reward_fn is not None and battle_before is not None:
+            trajectory_step["step_reward"] = self.step_reward_fn(
+                battle_before, next_battle, action, player_idx
+            )
+        else:
+            trajectory_step["step_reward"] = 0.0
 
     async def _advance_selfplay(
         self, state: dict, action: Any, player_idx: int
@@ -278,37 +324,68 @@ class PokemonBattleEnv:
             if next_battle is not None:
                 state["turn"] = next_battle.turn
 
+    # ------------------------------------------------------------------
+    # Reward computation — single source of truth
+    # ------------------------------------------------------------------
+
+    def _compute_terminal_reward(self, won: bool | None) -> float:
+        """Compute terminal reward from game outcome.
+
+        All reward paths call this. Configurable via constructor args.
+        """
+        if won is None:
+            return self.reward_draw
+        return self.reward_win if won else self.reward_loss
+
+    def _assign_rewards(
+        self, trajectory: list, won: bool | None
+    ) -> float:
+        """Assign terminal rewards to all trajectory steps. Returns the reward.
+
+        For heuristic mode: all steps get the same reward.
+        For self-play: P1 steps get winner's reward, P2 steps get loser's.
+        """
+        if self.opponent_mode == "self_play":
+            if won is None:
+                p1_reward = self.reward_draw
+                p2_reward = self.reward_draw
+            elif won:  # P1 won
+                p1_reward = self.reward_win
+                p2_reward = self.reward_loss
+            else:  # P2 won
+                p1_reward = self.reward_loss
+                p2_reward = self.reward_win
+
+            for step in trajectory:
+                step["reward"] = (
+                    p1_reward if step["player_idx"] == 0 else p2_reward
+                )
+            return p1_reward  # state-level reward tracks P1
+        else:
+            reward = self._compute_terminal_reward(won)
+            for step in trajectory:
+                step["reward"] = reward
+            return reward
+
     async def render_completion(self, state: dict) -> None:
         """Assign terminal rewards to all trajectory steps.
 
-        Binary reward: 1.0 for win, 0.0 for loss.
-
-        For heuristic mode: all steps get the same reward.
-        For self-play: P1 steps get win reward, P2 steps get opposite.
+        Uses configurable reward_win / reward_loss / reward_draw.
+        Self-play uses explicit per-player rewards (not `1.0 - reward`).
         """
-        won = state.get("won", False)
-        reward = 1.0 if won else 0.0
+        won = state.get("won")  # Don't default to False — None is meaningful
+        truncated = state.get("truncated", False)
 
-        for step in state["trajectory"]:
-            if self.opponent_mode == "self_play":
-                if won is None:
-                    # Draw/crash/timeout: both players get 0.0
-                    step["reward"] = 0.0
-                elif step["player_idx"] == 0:
-                    # P1 wins → 1.0, P1 loses → 0.0
-                    step["reward"] = reward
-                else:
-                    # P2 gets the opposite of P1
-                    step["reward"] = 1.0 - reward
-            else:
-                step["reward"] = reward
+        reward = self._assign_rewards(state["trajectory"], won)
 
         state["reward"] = reward
         state["metrics"] = {
             "won": int(won) if won is not None else -1,
+            "truncated": int(truncated),
             "turns": state["turn"],
             "decision_count": state["decision_count"],
             "trajectory_length": len(state["trajectory"]),
+            "parse_failure_count": state.get("parse_failure_count", 0),
         }
 
     # ------------------------------------------------------------------
@@ -326,7 +403,7 @@ class PokemonBattleEnv:
 
         Args:
             action_fn: fn(battle) -> BattleOrder. If None, uses
-                translator.get_fallback_action (highest power move).
+                translator.get_fallback_action (random legal action).
 
         Returns:
             dict with keys: trajectory, won, turns, reward, battle_tag
@@ -360,9 +437,7 @@ class PokemonBattleEnv:
         result = await self.adapter.run_battle(action_fn=capturing_callback)
 
         won = result["won"]
-        reward = 1.0 if won else 0.0
-        for step in trajectory:
-            step["reward"] = reward
+        reward = self._assign_rewards(trajectory, won)
 
         return {
             "trajectory": trajectory,
@@ -383,7 +458,7 @@ class PokemonBattleEnv:
 
         Args:
             action_fn: fn(battle) -> BattleOrder. If None, uses
-                translator.get_fallback_action (highest power move).
+                translator.get_fallback_action (random legal action).
 
         Returns:
             dict with keys: trajectory, won, turns, reward, battle_tag,
@@ -391,69 +466,68 @@ class PokemonBattleEnv:
         """
         from pokemon_rl.battle import BattleManager
 
-        manager = BattleManager(
+        async with BattleManager(
             port=self.port,
             battle_format=self.battle_format,
             server_host=self.server_host,
-        )
+        ) as manager:
+            trajectory = []
 
-        trajectory = []
+            if self.opponent_mode == "self_play":
+                return await self._run_selfplay_standalone(
+                    manager, action_fn, trajectory
+                )
 
-        if self.opponent_mode == "self_play":
-            return await self._run_selfplay_standalone(
-                manager, action_fn, trajectory
+            # Heuristic opponent mode
+            battle = await manager.start_battle(
+                opponent_type=self.opponent_type
             )
+            turn_count = 0
 
-        # Heuristic opponent mode
-        battle = await manager.start_battle(
-            opponent_type=self.opponent_type
-        )
-        turn_count = 0
+            while battle is not None and turn_count < self.max_game_turns:
+                # Generate prompt
+                try:
+                    prompt = self.translator.battle_to_prompt(battle)
+                    prompt_length = sum(len(m["content"]) for m in prompt)
+                except Exception:
+                    prompt_length = 0
 
-        while battle is not None and turn_count < self.max_game_turns:
-            # Generate prompt
-            try:
-                prompt = self.translator.battle_to_prompt(battle)
-                prompt_length = sum(len(m["content"]) for m in prompt)
-            except Exception:
-                prompt_length = 0
+                # Get action
+                if action_fn is not None:
+                    order = action_fn(battle)
+                else:
+                    order = self.translator.get_fallback_action(battle)
 
-            # Get action
-            if action_fn is not None:
-                order = action_fn(battle)
-            else:
-                order = self.translator.get_fallback_action(battle)
+                trajectory.append({
+                    "turn": battle.turn,
+                    "prompt_length": prompt_length,
+                    "action": order.message if order else "/choose default",
+                    "player_idx": 0,
+                    "force_switch": bool(
+                        getattr(battle, "force_switch", False)
+                    ),
+                })
 
-            trajectory.append({
-                "turn": battle.turn,
-                "prompt_length": prompt_length,
-                "action": order.message if order else "/choose default",
-                "player_idx": 0,
-                "force_switch": bool(
-                    getattr(battle, "force_switch", False)
-                ),
-            })
+                battle, done = await manager.step(order)
+                turn_count += 1
+                if done:
+                    break
 
-            battle, done = await manager.step(order)
-            turn_count += 1
-            if done:
-                break
+            result = manager.get_result()
+            won = result["won"]
+            truncated = turn_count >= self.max_game_turns
+            reward = self._assign_rewards(trajectory, won)
 
-        result = manager.get_result()
-        won = result["won"]
-        reward = 1.0 if won else 0.0
-        for step in trajectory:
-            step["reward"] = reward
-
-        return {
-            "trajectory": trajectory,
-            "won": won,
-            "turns": result["turns"],
-            "reward": reward,
-            "battle_tag": result.get("battle_tag"),
-            "decision_count": len(trajectory),
-            "selfplay": False,
-        }
+            return {
+                "trajectory": trajectory,
+                "won": won,
+                "turns": result["turns"],
+                "reward": reward,
+                "truncated": truncated,
+                "battle_tag": result.get("battle_tag"),
+                "decision_count": len(trajectory),
+                "selfplay": False,
+            }
 
     async def _run_selfplay_standalone(
         self,
@@ -465,6 +539,7 @@ class PokemonBattleEnv:
 
         Uses the sequential selfplay API which naturally handles
         force-switches (asymmetric state count per cycle).
+        Manager cleanup handled by caller's `async with`.
         """
         pending = await manager.start_battle_selfplay()
         step_count = 0
@@ -491,16 +566,7 @@ class PokemonBattleEnv:
 
         result = manager.get_result()
         won = result["won"]
-        reward = 1.0 if won else 0.0
-
-        for step in trajectory:
-            if won is None:
-                # Draw/crash/timeout: both players get 0.0
-                step["reward"] = 0.0
-            elif step["player_idx"] == 0:
-                step["reward"] = reward
-            else:
-                step["reward"] = 1.0 - reward
+        reward = self._assign_rewards(trajectory, won)
 
         return {
             "trajectory": trajectory,

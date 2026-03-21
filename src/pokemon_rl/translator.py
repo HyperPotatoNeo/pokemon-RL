@@ -18,8 +18,12 @@ Usage:
 from __future__ import annotations
 
 import json
+import logging
+import random
 import re
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class StateTranslator:
@@ -53,32 +57,35 @@ class StateTranslator:
     def parse_action(self, response_text: str, battle: Any) -> Any | None:
         """Parse LLM text response into a BattleOrder.
 
-        Extracts the last JSON object from the response and matches
-        move/switch names against available actions.
+        Extracts the last valid JSON object from the response (supports
+        nested JSON) and matches move/switch names against available actions.
 
         Returns:
             BattleOrder if successfully parsed, None otherwise.
         """
         from poke_env.player.battle_order import BattleOrder
 
-        # Find the last JSON object in the response
-        json_match = None
-        for m in re.finditer(r"\{[^{}]*\}", response_text):
-            json_match = m
-
-        if json_match is None:
-            return None
-
-        try:
-            action_json = json.loads(json_match.group(0))
-        except json.JSONDecodeError:
+        action_json = self._extract_last_json(response_text)
+        if action_json is None:
             return None
 
         keys_lower = {k.lower(): k for k in action_json.keys()}
 
+        # Detect battle format for mechanic validation
+        battle_format = getattr(battle, '_format', '') or ''
+        format_lower = battle_format.lower()
+
         # Try move / dynamax / terastallize
         for action_type in ("move", "dynamax", "terastallize"):
             if action_type in keys_lower:
+                # Validate mechanic against format
+                if action_type == "dynamax" and any(
+                    g in format_lower for g in ("gen1", "gen2", "gen3", "gen4", "gen5", "gen6", "gen7", "gen9")
+                ):
+                    continue  # dynamax only exists in gen8
+                if action_type == "terastallize" and "gen9" not in format_lower:
+                    continue  # terastallize only exists in gen9
+
                 original_key = keys_lower[action_type]
                 move_name = str(action_json[original_key]).strip()
                 move_id = move_name.lower().replace(" ", "")
@@ -103,15 +110,41 @@ class StateTranslator:
 
         return None
 
+    @staticmethod
+    def _extract_last_json(text: str) -> dict | None:
+        """Extract the last valid JSON object from text.
+
+        Handles nested JSON by trying progressively larger substrings
+        from each closing brace backwards to each opening brace.
+        """
+        for i in range(len(text) - 1, -1, -1):
+            if text[i] == '}':
+                for j in range(i, -1, -1):
+                    if text[j] == '{':
+                        try:
+                            obj = json.loads(text[j:i + 1])
+                            if isinstance(obj, dict):
+                                return obj
+                        except json.JSONDecodeError:
+                            continue
+        return None
+
     def get_fallback_action(self, battle: Any) -> Any:
-        """Fallback: pick highest base power move, or first switch."""
+        """Fallback: random legal action.
+
+        Uses random instead of max-base-power to prevent reward hacking:
+        a model that always outputs garbage would otherwise get the
+        strongest heuristic move for free via this fallback.
+        """
         from poke_env.player.battle_order import BattleOrder
 
-        if battle.available_moves:
-            best_move = max(battle.available_moves, key=lambda m: m.base_power)
-            return BattleOrder(best_move)
-        elif battle.available_switches:
-            return BattleOrder(battle.available_switches[0])
+        actions = []
+        for m in battle.available_moves:
+            actions.append(BattleOrder(m))
+        for p in battle.available_switches:
+            actions.append(BattleOrder(p))
+        if actions:
+            return random.choice(actions)
         return BattleOrder(None)
 
     # ------------------------------------------------------------------
@@ -141,7 +174,13 @@ class StateTranslator:
             ) from e
 
         # LocalSim requires data dicts that pokechamp loads from JSON caches
-        battle_format = getattr(battle, '_format', 'gen1ou')
+        battle_format = getattr(battle, '_format', None)
+        if battle_format is None:
+            battle_format = 'gen1ou'
+            logger.warning(
+                "battle._format not found (poke-env API may have changed). "
+                "Defaulting to 'gen1ou'. This may produce incorrect damage calcs."
+            )
         gen_data = poke_env.data.GenData.from_format(battle_format)
         dynamax_disable = "gen1" in battle_format or "gen2" in battle_format or "gen3" in battle_format
         sim = LocalSim(

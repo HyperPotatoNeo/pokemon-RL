@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,25 +31,44 @@ class TrajectoryLogger:
     def log_battle(self, result: dict) -> None:
         """Log a complete battle result as one JSONL line.
 
+        Uses os.write for atomic writes (lines < PIPE_BUF = 4KB on Linux).
+        Safe for concurrent multi-process writers to the same file.
+
         Args:
             result: Battle result dict (from BattleManager.get_result() or
                 PokemonBattleEnv.run_standalone()). Should contain at least:
                 won, turns, trajectory, reward, battle_tag.
         """
-        with open(self.output_path, "a") as f:
-            f.write(json.dumps(result, default=str) + "\n")
+        line = json.dumps(result, default=str) + "\n"
+        fd = os.open(
+            str(self.output_path),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o644,
+        )
+        try:
+            os.write(fd, line.encode())
+        finally:
+            os.close(fd)
 
     def log_step(self, step: dict) -> None:
         """Log a single turn step as one JSONL line.
 
-        Useful for streaming logging during long battles.
+        Uses os.write for atomic writes. Safe for concurrent writers.
 
         Args:
             step: Turn step dict with keys like: turn, action, player_idx,
                 prompt_length, etc.
         """
-        with open(self.output_path, "a") as f:
-            f.write(json.dumps(step, default=str) + "\n")
+        line = json.dumps(step, default=str) + "\n"
+        fd = os.open(
+            str(self.output_path),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+            0o644,
+        )
+        try:
+            os.write(fd, line.encode())
+        finally:
+            os.close(fd)
 
     def read_battles(self) -> list[dict]:
         """Read all logged battles from the JSONL file.

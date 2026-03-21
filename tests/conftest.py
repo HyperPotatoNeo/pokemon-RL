@@ -3,7 +3,6 @@
 Test categories:
     @pytest.mark.unit         — No external deps. Runs anywhere.
     @pytest.mark.integration  — Needs Showdown server + poke-env (compute node).
-    @pytest.mark.gpu          — Needs GPU + vLLM (compute node with GPU).
 
 Dependencies (poke-env, pokechamp) are installed via the project venv.
 See scripts/setup_node.sh for setup instructions.
@@ -20,11 +19,9 @@ import pytest
 # ---------------------------------------------------------------------------
 def _is_port_open(port: int) -> bool:
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2)
-        result = sock.connect_ex(("localhost", port))
-        sock.close()
-        return result == 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(2)
+            return sock.connect_ex(("localhost", port)) == 0
     except Exception:
         return False
 

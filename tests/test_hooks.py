@@ -528,7 +528,9 @@ class TestHooksSelfplayCycle:
             "game_over": False,
             "turn": 1,
             "decision_count": 0,
-            "winner": None,
+            "won": None,
+            "truncated": False,
+            "parse_failure_count": 0,
             "manager": mock_mgr,
             "current_player": 0,
             "battle": pending[0][1],  # bare Battle, not tuple
@@ -567,7 +569,9 @@ class TestHooksSelfplayCycle:
             "game_over": False,
             "turn": 1,
             "decision_count": 0,
-            "winner": None,
+            "won": None,
+            "truncated": False,
+            "parse_failure_count": 0,
             "manager": mock_mgr,
             "current_player": 0,
             "battle": pending[0][1],
@@ -591,10 +595,9 @@ class TestHooksSelfplayCycle:
     @pytest.mark.unit
     @pytest.mark.asyncio
     async def test_selfplay_won_none_symmetric_rewards(self):
-        """Self-play draw/crash (won=None): both players get 0.0.
+        """Self-play draw/crash (won=None): both players get reward_draw.
 
-        Previously broken: None was treated as P1 loss (0.0) with P2
-        getting inverted 1.0. Fixed: explicit won=None guard gives 0.0 to both.
+        Default reward_draw=0.0. With N1, this uses configurable rewards.
         """
         env = PokemonBattleEnv(
             translator=None,
@@ -602,7 +605,7 @@ class TestHooksSelfplayCycle:
             opponent_mode="self_play",
         )
         state = {
-            "won": None, "turn": 5, "decision_count": 10,
+            "won": None, "truncated": False, "turn": 5, "decision_count": 10,
             "trajectory": [
                 {"player_idx": 0},
                 {"player_idx": 1},
@@ -614,7 +617,7 @@ class TestHooksSelfplayCycle:
         p1_reward = state["trajectory"][0]["reward"]
         p2_reward = state["trajectory"][1]["reward"]
         assert p1_reward == p2_reward == 0.0, (
-            f"For won=None, both players should get 0.0. "
+            f"For won=None, both players should get reward_draw (0.0). "
             f"Got P1={p1_reward}, P2={p2_reward}"
         )
 

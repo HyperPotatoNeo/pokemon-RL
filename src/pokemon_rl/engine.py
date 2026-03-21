@@ -11,6 +11,7 @@ Usage:
     engine.stop()
 """
 
+import atexit
 import os
 import socket
 import subprocess
@@ -80,10 +81,12 @@ class ShowdownEngine:
                 str(self.port),
             ],
             cwd=str(self.showdown_path),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             env=env,
         )
+
+        atexit.register(self.stop)
 
         # Wait for server to be ready
         if not self._wait_for_ready(timeout):
@@ -97,10 +100,9 @@ class ShowdownEngine:
         start = time.time()
         while time.time() - start < timeout:
             if self._process.poll() is not None:
-                # Process exited — read stderr for clues
-                stderr = self._process.stderr.read().decode() if self._process.stderr else ""
                 raise RuntimeError(
-                    f"Showdown process exited with code {self._process.returncode}: {stderr[:500]}"
+                    f"Showdown process exited with code {self._process.returncode}. "
+                    f"Check the Showdown installation at {self.showdown_path}"
                 )
             if self._is_port_open():
                 return True
@@ -110,11 +112,9 @@ class ShowdownEngine:
     def _is_port_open(self) -> bool:
         """Check if the server port is accepting TCP connections."""
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(("localhost", self.port))
-            sock.close()
-            return result == 0
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                return sock.connect_ex(("localhost", self.port)) == 0
         except Exception:
             return False
 
@@ -140,6 +140,11 @@ class ShowdownEngine:
                 self._process.wait()
             self._process = None
 
+        try:
+            atexit.unregister(self.stop)
+        except Exception:
+            pass
+
     @property
     def is_running(self) -> bool:
         """True if a server process is active (ours or external)."""
@@ -155,8 +160,11 @@ class ShowdownEngine:
         self.stop()
 
     def __del__(self):
-        if not self._externally_managed:
-            self.stop()
+        try:
+            if not self._externally_managed:
+                self.stop()
+        except Exception:
+            pass
 
     def __repr__(self):
         status = "running" if self.is_running else "stopped"

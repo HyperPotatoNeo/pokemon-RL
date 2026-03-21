@@ -3,9 +3,7 @@ name = "pokemon-rl"
 version = "0.1.0"
 description = "Pokemon Showdown multi-agent RL environment for prime-rl"
 requires-python = ">=3.10"
-dependencies = [
-    "numpy",
-]
+dependencies = []
 
 [project.optional-dependencies]
 test = [
@@ -26,5 +24,4 @@ asyncio_mode = "auto"
 markers = [
     "unit: runs without external dependencies",
     "integration: needs Showdown server + poke-env (compute node)",
-    "gpu: needs GPU + vLLM inference server (compute node with GPU)",
 ]

@@ -1,5 +1,22 @@
 # Progress
 
+## 2026-03-20: Code review fixes — 137 tests passing (111 unit + 26 integration)
+
+### Done
+- **All 4 Critical fixes**: Fallback action reward hacking (C1), truncated game rewards (C2),
+  draw/crash indistinguishable from loss (C3), dead code cleanup (C4).
+- **All 7 High fixes**: PIPE deadlock (H1), BattleManager cleanup (H2), zombie loop prevention (H3),
+  name collisions (H4), concurrent-safe logging (H5), socket leak (H6), setup_state cleanup (H7).
+- **10 of 13 Medium fixes**: server_host consistency (M1), _format warning (M5), nested JSON parsing (M6),
+  gen1 dynamax validation (M7), deferred test imports (M8), numpy removal (M9), event loop blocking (M10),
+  exception propagation (M12), relay error handling (M13), grace period (M3 partial).
+- **5 of 8 Low fixes**: deprecated asyncio (L3), gpu marker removal (L5), atexit registration (L6),
+  PIPE handle cleanup (L7, moot after H1).
+- **17 new tests** covering all critical/high fixes.
+- **Deferred**: M2 (asymmetric policies), M4 (verifiers registration), M11 (shaped rewards) — design
+  decisions, not bugs. L1 (adapter redundancy), L4 (monkey-patch), L8 (counter persistence) — minor.
+- Full documentation in `CODE_FIXES.md`.
+
 ## 2026-03-20: Adversarial review + selfplay hooks fixes — 120 tests passing
 
 ### Done

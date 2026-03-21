@@ -41,8 +41,11 @@ Usage (self-play):
 from __future__ import annotations
 
 import asyncio
+import logging
 import queue as thread_queue  # thread-safe queue
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class BattleManager:
@@ -181,6 +184,20 @@ class BattleManager:
             self._finished = True
         return state
 
+    def _check_battle_future(self) -> None:
+        """Check if the battle coroutine raised an exception.
+
+        M12: Propagates exceptions from _battle_future instead of
+        letting callers hang on queues that will never be fed.
+        """
+        if self._battle_future is not None and self._battle_future.done():
+            exc = self._battle_future.exception()
+            if exc is not None:
+                self._finished = True
+                raise RuntimeError(
+                    f"Battle coroutine failed: {exc}"
+                ) from exc
+
     async def step(self, action: Any) -> tuple[Any, bool]:
         """Submit action and wait for next state. Returns (state, done)."""
         if not self._started:
@@ -189,6 +206,7 @@ class BattleManager:
             raise RuntimeError("Battle already finished.")
         if self._selfplay:
             raise RuntimeError("Use step_selfplay methods for self-play battles.")
+        self._check_battle_future()
 
         self._step_count += 1
         await self._poke_loop_put(self._player.action_queue, action)
@@ -241,17 +259,26 @@ class BattleManager:
         self._selfplay_relay = thread_queue.Queue()
 
         # Start relay tasks on POKE_LOOP
-        async def relay_states(player_idx, player):
+        # N2 fix: relay_q captured as local parameter so close() can set
+        # self._selfplay_relay = None without causing AttributeError in
+        # the CancelledError handler on POKE_LOOP.
+        async def relay_states(player_idx, player, relay_q):
             """Read from player's state_queue, put on shared relay queue."""
-            while True:
-                state = await player.state_queue.get()
-                self._selfplay_relay.put((player_idx, state))
-                if state is None:
-                    break
+            try:
+                while True:
+                    state = await player.state_queue.get()
+                    relay_q.put((player_idx, state))
+                    if state is None:
+                        break
+            except asyncio.CancelledError:
+                relay_q.put((player_idx, None))
+            except Exception as exc:
+                logger.error(f"Relay task for player {player_idx} failed: {exc}")
+                relay_q.put((player_idx, None))
 
         for idx, player in enumerate([self._player, self._opponent_player2]):
             task = asyncio.run_coroutine_threadsafe(
-                relay_states(idx, player), POKE_LOOP
+                relay_states(idx, player, self._selfplay_relay), POKE_LOOP
             )
             self._relay_tasks.append(task)
 
@@ -295,6 +322,7 @@ class BattleManager:
         if self._finished:
             return []
 
+        self._check_battle_future()
         relay = self._selfplay_relay
 
         # Wait for at least one state (blocking with a long timeout)
@@ -315,8 +343,11 @@ class BattleManager:
 
         # Brief grace period: check if the other player also has a state
         # (normal turns produce both states near-simultaneously)
+        # M10: Wrapped in run_in_executor to avoid blocking the event loop
         try:
-            second = relay.get(timeout=0.5)
+            second = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: relay.get(timeout=0.5)
+            )
             idx2, state2 = second
             if state2 is None:
                 # Game ending — but return the valid state we already have.
@@ -359,6 +390,39 @@ class BattleManager:
             "battle_tag": battle.battle_tag,
             "selfplay": self._selfplay,
         }
+
+    # ------------------------------------------------------------------
+    # Cleanup
+    # ------------------------------------------------------------------
+
+    async def close(self) -> None:
+        """Clean up all resources.
+
+        Cancels the battle future, relay tasks, and clears player references.
+        Safe to call multiple times.
+        """
+        # Cancel battle future
+        if self._battle_future is not None and not self._battle_future.done():
+            self._battle_future.cancel()
+        self._battle_future = None
+
+        # Cancel relay tasks
+        for task in self._relay_tasks:
+            if not task.done():
+                task.cancel()
+        self._relay_tasks.clear()
+
+        self._player = None
+        self._opponent = None
+        self._opponent_player2 = None
+        self._selfplay_relay = None
+        self._finished = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.close()
 
     @property
     def is_started(self) -> bool:

@@ -110,3 +110,32 @@ class TestTrajectoryLogger:
         assert len(battles[0]["trajectory"]) == 2, "Trajectory should have 2 steps"
         assert battles[0]["trajectory"][0]["action"] == "move thunderbolt"
         assert battles[0]["trajectory"][1]["action"] == "move surf"
+
+    @pytest.mark.unit
+    def test_concurrent_writes_atomic(self, tmp_path):
+        """H5 fix: concurrent writes should not interleave."""
+        import threading
+        from pokemon_rl.data import TrajectoryLogger
+
+        logger = TrajectoryLogger(str(tmp_path / "concurrent.jsonl"))
+        barrier = threading.Barrier(4)
+
+        def write_batch(thread_id):
+            barrier.wait()
+            for i in range(10):
+                logger.log_step({"thread": thread_id, "step": i})
+
+        threads = [
+            threading.Thread(target=write_batch, args=(t,)) for t in range(4)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Every line should be valid JSON (no interleaving)
+        battles = logger.read_battles()
+        assert len(battles) == 40, f"Expected 40 entries, got {len(battles)}"
+        for b in battles:
+            assert "thread" in b
+            assert "step" in b

@@ -87,6 +87,8 @@ class ControllablePlayer:
             account_name = _next_username("ctrl")
 
         class _ControllablePlayerImpl(Player):
+            MAX_CONSECUTIVE_TIMEOUTS = 2
+
             def __init__(self, timeout: float, **kwargs):
                 super().__init__(**kwargs)
                 self.state_queue: asyncio.Queue = create_in_poke_loop(asyncio.Queue)
@@ -94,6 +96,12 @@ class ControllablePlayer:
                 self.finished_event: asyncio.Event = create_in_poke_loop(asyncio.Event)
                 self.result_battle: Any = None
                 self._action_timeout = timeout
+                self._consecutive_timeouts = 0
+                self._max_consecutive_timeouts = self.MAX_CONSECUTIVE_TIMEOUTS
+
+            def _create_forfeit_order(self):
+                """Create a forfeit order to end a zombie battle."""
+                return DefaultBattleOrder()
 
             def choose_move(self, battle):
                 """Return awaitable — blocks until external action provided."""
@@ -107,10 +115,14 @@ class ControllablePlayer:
                         self.action_queue.get(),
                         timeout=self._action_timeout,
                     )
+                    self._consecutive_timeouts = 0
+                    return action
                 except asyncio.TimeoutError:
-                    # Safety fallback — prevents POKE_LOOP hang
+                    self._consecutive_timeouts += 1
+                    if self._consecutive_timeouts >= self._max_consecutive_timeouts:
+                        # Force forfeit to prevent zombie battles
+                        return self._create_forfeit_order()
                     return self.choose_default_move()
-                return action
 
             def _battle_finished_callback(self, battle):
                 """Signal game over by putting None sentinel on state queue."""
