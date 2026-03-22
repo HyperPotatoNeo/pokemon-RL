@@ -27,7 +27,7 @@ See [docs/architecture.md](docs/architecture.md) for detailed data flow and desi
 
 - Python 3.10+
 - Node.js (for Pokemon Showdown server)
-- [pokechamp](https://github.com/HyperPotatoNeo/pokechamp) cloned locally (brings poke-env as a bundled dependency)
+- [pokechamp](https://github.com/HyperPotatoNeo/pokechamp) — bundled as a git submodule at `vendor/pokechamp` (brings poke-env fork as a dependency)
 
 ### Install
 
@@ -137,7 +137,7 @@ See [docs/rewards.md](docs/rewards.md) for the configurable reward system.
 
 ## Project Status
 
-**235 tests** (207 unit + 28 integration), all passing. Phase 4 verifiers integration complete.
+**266 tests** (217 unit + 43 integration + 6 GPU), all passing. Phase 4 verifiers integration complete.
 
 See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 
@@ -145,7 +145,7 @@ See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 
 - **[poke-env](https://github.com/hsahovic/poke-env)** (installed via pokechamp) — Pokemon Showdown client library. Provides the `Player` base class, `Battle` objects, `BattleOrder` action representation, and WebSocket communication with Showdown. pokemon-rl's `ControllablePlayer` subclasses poke-env's `Player` to invert the callback-driven model into imperative queue-based control. All battle state (available moves, HP, types, etc.) comes from poke-env's `Battle` objects.
 
-- **[pokechamp](https://github.com/HyperPotatoNeo/pokechamp)** — LLM Pokemon battle agent. pokemon-rl uses pokechamp for two things: (1) the `"pokechamp_io"` prompt format in `StateTranslator`, which calls pokechamp's `state_translate` + `LocalSim` to produce rich prompts with damage calculations, and (2) as the installation vehicle for poke-env and its transitive dependencies (torch, etc.). Installing pokechamp via `pip install -e` puts poke-env into site-packages where it's importable normally.
+- **[pokechamp](https://github.com/HyperPotatoNeo/pokechamp)** (submodule at `vendor/pokechamp`) — LLM Pokemon battle agent with a poke-env fork. pokemon-rl uses pokechamp for two things: (1) the `"pokechamp_io"` prompt format in `StateTranslator`, which calls pokechamp's `state_translate` + `LocalSim` to produce rich prompts with damage calculations, and (2) as the installation vehicle for poke-env and its transitive dependencies (torch, etc.). Installing pokechamp via `pip install -e` puts poke-env into site-packages where it's importable normally. The fork includes a `ws://` fix for cross-node WebSocket connections to self-hosted Showdown servers.
 
 - **[verifiers](https://github.com/PrimeIntellect-ai/verifiers)** (optional) — RL environment framework for prime-rl. When installed, `PokemonBattleEnv` inherits from `vf.MultiTurnEnv` and integrates with the orchestrator's scoring pipeline. `PokemonRubric` provides passthrough rewards and game metrics. Without verifiers, the env works standalone for testing.
 
