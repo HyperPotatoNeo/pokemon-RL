@@ -6,7 +6,8 @@ set -e
 
 export HOME=/pscratch/sd/s/siddart2
 export PODMANHPC_PODMAN_BIN=/global/common/shared/das/podman-4.7.0/bin/podman
-# Use the pokechamp submodule (vendor/pokechamp) — has ws:// fix for cross-node
+# Use the pokechamp submodule for everything (has ws:// fix for cross-node)
+# pokemon-showdown is cloned inside vendor/pokechamp/ (gitignored there)
 POKECHAMP_PATH=$HOME/pokemon-rl/vendor/pokechamp
 SHOWDOWN_PATH=$POKECHAMP_PATH/pokemon-showdown
 
