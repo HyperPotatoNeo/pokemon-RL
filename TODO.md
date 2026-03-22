@@ -50,19 +50,50 @@
 - [x] Documentation updated (all docs, README, CLUSTER.md)
 - [x] pokechamp submodule at vendor/pokechamp (pokechamp_io format works)
 
-## Next: GPU Smoke Tests
+## Done: Phase 5 RL Training Integration — Plan
 
-- [ ] run_selfplay.sh: LLM self-play on GPU node via vLLM
-- [ ] run_crossnode.sh: cross-node battle (2 GPU nodes)
-- [ ] LLM vs heuristic (vLLM + Showdown)
+- [x] Comprehensive plan: `PHASE5_RL_PLAN.md` (v2, 2 adversarial reviews + consistency check)
+- [x] Sequence length analysis (4096 for testing, 8192 for production)
+- [x] TOML config design: self-play, heuristic, test configs
+- [x] Multi-node architecture: 1-node (3 inf + 1 train) and 2-node layouts
+- [x] Advantage computation analysis (pre-set for self-play, batch-level for single-agent)
+- [x] Team handling design (team_fn callable, random_team_pool factory)
+- [x] Kakuna opponent integration via ladder + separate metamon process
+- [x] Testing plan: T1-T7b (unit), T8-T12 (battle flow), T16-T19 (verifiers), T20-T21 (RL loop), T22-T24 (multi-node)
 
-## Future
+## Current: Phase 5A — Implementation (Test Cases)
 
-- [ ] Opponent curriculum (heuristic → self-play → frozen checkpoint)
-- [ ] Shaped step_reward_fn implementations (damage dealt, pokemon fainted)
-- [ ] Team pool / format selection
+- [ ] Write Phase 5 test cases per PHASE5_TEST_AGENT_INSTRUCTIONS.md
+- [ ] Write testing protocol for implementation agent
+
+## Next: Phase 5B — Implementation (Code)
+
+- [ ] Team handling: team_fn + random_team_pool in PokemonBattleEnv (~100 lines)
+- [ ] Ladder mode: BattleManager.start_battle_ladder() (~15 lines)
+- [ ] AbyssalPlayer in opponent factory (~10 lines)
+- [ ] LocalSim format fix (~3 lines)
+- [ ] Arg validation (warn on unrecognized kwargs)
+- [ ] TOML configs: selfplay, heuristic, test, 2-node variant
+- [ ] Launch scripts: 1-node, 2-node, Kakuna launcher
+
+## Next: Phase 5C — Testing + Validation
+
+- [ ] Run unit tests (T1-T7b) on login node
+- [ ] Run battle flow tests (T8-T12) on compute node
+- [ ] Run verifiers pipeline tests (T16-T19) on GPU node
+- [ ] Run full RL loop tests (T20) on GPU node + Showdown
+- [ ] Run multi-node tests (T22-T24) on 2 GPU nodes
+- [ ] Run Kakuna opponent tests on GPU node + metamon process
+- [ ] 10-step training validation run
+
+## Future: Phase 6 — Population Training
+
+- [ ] Opponent curriculum (heuristic → self-play → frozen checkpoint → Kakuna)
+- [ ] Shaped step_reward_fn (damage dealt, pokemon fainted)
+- [ ] Team pool expansion / format selection
 - [ ] Elo tracking
-- [ ] Multi-node deployment scripts
+- [ ] Deterministic Kakuna pairing (send_challenges/accept_challenges)
+- [ ] Multi-opponent configs (population of opponents per training step)
 - [ ] pokechamp_io format for all generations
 - [ ] Replay logging for analysis
 - [ ] Human player interface (websocket or terminal)

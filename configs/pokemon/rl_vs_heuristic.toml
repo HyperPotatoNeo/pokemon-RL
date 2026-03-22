@@ -1,0 +1,54 @@
+# Single-agent RL training against heuristic opponent.
+# One player trains, opponent uses fixed policy (max_damage by default).
+max_steps = 100
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "pokemon-rl"
+name = "vs-maxdamage-gen9ou"
+
+[orchestrator]
+batch_size = 16
+rollouts_per_example = 16    # = batch_size: batch-level normalization
+trajectory_strategy = "branching"
+
+[orchestrator.client]
+base_url = ["http://localhost:8001/v1"]   # Must match inference.server.port
+
+[orchestrator.sampling]
+max_tokens = 800             # Tokens per turn (must fit CoT reasoning + JSON action)
+temperature = 1.0
+
+[[orchestrator.env]]
+id = "pokemon_rl"
+name = "pokemon-vs-heuristic"
+
+[orchestrator.env.args]
+battle_format = "gen9ou"
+play_mode = "single"
+opponent_type = "max_damage"   # or "abyssal" or "random"
+port = 8000
+observation_format = "pokechamp_io"
+reward_win = 1.0
+reward_loss = 0.0
+reward_draw = 0.0           # Deliberate: draws = losses. Do not change without discussion.
+max_game_turns = 200
+num_battles = 10000
+team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
+
+[trainer.optim]
+lr = 3e-6
+
+[trainer.model.ac]
+freq = 1   # Full gradient checkpointing — prevents OOM on single A100-80GB
+
+[ckpt]
+interval = 10
+
+[inference]
+
+[inference.server]
+port = 8001   # Must NOT be 8000 (Showdown uses 8000)

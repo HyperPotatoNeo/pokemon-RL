@@ -123,6 +123,35 @@ result = await env.run_turn_by_turn(action_fn=random_action)
 
 See [docs/rewards.md](docs/rewards.md) for the configurable reward system.
 
+## RL Training
+
+Train LLMs to play Pokemon via GRPO with prime-rl integration.
+
+### Quick Start
+
+```bash
+# Generic launch (inside prime-rl environment):
+bash scripts/launch_rl.sh configs/pokemon/rl_selfplay.toml
+
+# Or manually:
+cd /path/to/prime-rl && source .venv/bin/activate
+pip install -e /path/to/pokemon-rl/vendor/pokechamp
+pip install -e /path/to/pokemon-rl
+rl @ /path/to/pokemon-rl/configs/pokemon/rl_selfplay.toml
+```
+
+### Configs
+
+| Config | Mode | Description |
+|--------|------|-------------|
+| `rl_selfplay.toml` | self_play | Production self-play training (gen9ou) |
+| `rl_vs_heuristic.toml` | single | Production vs max_damage heuristic (gen9ou) |
+| `rl_test.toml` | self_play | Integration testing (3 steps, batch=4) |
+
+**Critical**: All configs set `trajectory_strategy = "branching"`. Each turn becomes a separate TrainingSample. Do not remove this.
+
+See [docs/rl_training.md](docs/rl_training.md) for the full RL training guide: config reference, prompt construction, launching, and architecture.
+
 ## Documentation
 
 | Document | Contents |
@@ -132,12 +161,13 @@ See [docs/rewards.md](docs/rewards.md) for the configurable reward system.
 | [docs/rewards.md](docs/rewards.md) | Configurable rewards, advantage pre-setting, self-play assignment |
 | [docs/selfplay.md](docs/selfplay.md) | Self-play mechanics, force-switch handling, hooks buffering |
 | [docs/testing.md](docs/testing.md) | Test philosophy, markers, running tests, mock patterns |
-| [docs/deployment.md](docs/deployment.md) | NERSC Perlmutter setup, containers, multi-node battles |
+| [docs/rl_training.md](docs/rl_training.md) | RL training setup, configs, prompt construction, launching |
+| [docs/deployment.md](docs/deployment.md) | Cluster deployment, containers, multi-node, RL deployment |
 | [docs/api.md](docs/api.md) | Public API reference for all classes and methods |
 
 ## Project Status
 
-**266 tests** (217 unit + 43 integration + 6 GPU), all passing. Phase 4 verifiers integration complete.
+**Phase 5 RL training integration complete.** 298+ tests passing. 3 production configs, generic launch script, full documentation. Successfully trained Qwen3-4B via GRPO self-play on gen9randombattle.
 
 See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 

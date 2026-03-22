@@ -97,3 +97,58 @@ For HPC clusters with container runtimes (podman, Singularity, etc.):
 
 - poke-env is installed into site-packages via `pip install -e vendor/pokechamp`.
 - A `poke_env` **symlink** exists at the project root → `vendor/pokechamp/poke_env`. This is required because pokechamp's `data_cache.py` uses relative paths (`./poke_env/data/static/...`). The symlink shadows the site-packages poke_env, which causes a circular import if you `from pokechamp.prompts import ...` directly. **Always `import poke_env` first** to break the cycle (the translator does this automatically).
+
+## RL Training Deployment
+
+See [rl_training.md](rl_training.md) for the full training guide with config reference.
+
+### Port Allocation
+
+Two servers run simultaneously:
+- **Showdown server**: Port 8000 (default). Background Node.js process.
+- **Inference server (vLLM)**: Different port (8001 recommended). prime-rl starts this automatically when `[inference]` is present in the TOML config.
+
+Port 8000 is reserved for Showdown. Never configure the inference server on port 8000.
+
+### Single-Node Layout
+
+```
+GPU 0-2: vLLM inference (tensor-parallel)
+GPU 3:   Trainer (GRPO weight updates)
+CPU:     Showdown + Orchestrator (background)
+```
+
+Use `scripts/launch_rl.sh` or `local_scripts/launch_1node.sh` (cluster-specific).
+
+### Two-Node Layout
+
+```
+Node 0: Showdown :8000 + vLLM :8001 (4 GPUs)
+Node 1: Orchestrator + Trainer (4 GPUs)
+```
+
+Requires `--net=host` container networking. See `local_scripts/launch_2node.sh`.
+
+### Installing pokemon-rl into prime-rl
+
+pokemon-rl must be installed into prime-rl's venv (not its own `.venv`):
+
+```bash
+cd /path/to/prime-rl && source .venv/bin/activate
+pip install -e /path/to/pokemon-rl/vendor/pokechamp  # poke-env fork
+pip install -e /path/to/pokemon-rl                    # pokemon-rl itself
+ln -sfn /path/to/pokemon-rl/vendor/pokechamp/poke_env poke_env  # data symlink
+```
+
+The `scripts/launch_rl.sh` script does this automatically.
+
+### Gradient Checkpointing
+
+For single-GPU training (3 GPUs inference + 1 training on a 4-GPU node):
+
+```toml
+[trainer.model.ac]
+freq = 1   # Full gradient checkpointing — prevents OOM on A100-80GB
+```
+
+Without this, Qwen3-4B training OOMs at ~76.5 GiB peak memory.

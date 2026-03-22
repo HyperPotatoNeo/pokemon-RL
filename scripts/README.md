@@ -10,6 +10,7 @@ sensible defaults — override them for your cluster environment.
 | `setup_node.sh` | Install deps + start Showdown server |
 | `setup_node_hostnet.sh` | Like setup_node but with host networking (for multi-node) |
 | `run_tests.sh` | Run pytest inside the project venv |
+| `launch_rl.sh` | Start Showdown + install deps + run RL training |
 
 ## Environment Variables
 
@@ -40,6 +41,22 @@ VLLM_HOST=localhost VLLM_PORT=8001 MODEL_NAME=Qwen/Qwen3-4B-Instruct-2507 \
 REMOTE_NODE=other-hostname \
   bash scripts/run_tests.sh tests/test_phase4_gpu.py -k multinode -v
 ```
+
+## Launch Training
+
+```bash
+# Self-play training (default config):
+bash scripts/launch_rl.sh
+
+# Specific config:
+bash scripts/launch_rl.sh configs/pokemon/rl_vs_heuristic.toml
+
+# Custom paths:
+PRIME_RL_DIR=/path/to/prime-rl NODE_BIN=/usr/bin/node \
+  bash scripts/launch_rl.sh configs/pokemon/rl_selfplay.toml
+```
+
+See [docs/rl_training.md](../docs/rl_training.md) for full configuration reference.
 
 ## Cluster-Specific Scripts
 

@@ -278,11 +278,42 @@ class StateTranslator:
             get_cached_pokemon_item_dict(),
             gen_data,
             dynamax_disable,
+            format=battle_format,
         )
         system_prompt, state_prompt, action_prompt = state_translate(sim, battle)
 
-        # Combine state and action prompts for the user message
-        user_prompt = state_prompt + "\n" + action_prompt
+        # Build constraint prompt matching pokechamp's llm_player CoT variant.
+        # Uses the "cot" constraint which wraps thought inside JSON, ensuring
+        # the model outputs parseable JSON even without json_format=True.
+        if battle.active_pokemon.fainted or len(battle.available_moves) == 0:
+            constraint = (
+                'Choose the most suitable pokemon to switch by thinking '
+                'step by step. Your thought should be no more than 3 sentences. '
+                'Your output MUST be a JSON like: '
+                '{"thought":"<step-by-step-thinking>", '
+                '"switch":"<switch_pokemon_name>"}\n'
+            )
+        elif len(battle.available_switches) == 0:
+            constraint = (
+                'Choose the best action by thinking step by step. '
+                'Your thought should be no more than 3 sentences. '
+                'Your output MUST be a JSON like: '
+                '{"thought":"<step-by-step-thinking>", '
+                '"move":"<move_name>"}\n'
+            )
+        else:
+            constraint = (
+                'Choose the best action by thinking step by step. '
+                'Your thought should be no more than 3 sentences. '
+                'Your output MUST be a JSON like: '
+                '{"thought":"<step-by-step-thinking>", '
+                '"move":"<move_name>"} or '
+                '{"thought":"<step-by-step-thinking>", '
+                '"switch":"<switch_pokemon_name>"}\n'
+            )
+
+        # Combine: state + action choices + JSON constraint
+        user_prompt = state_prompt + "\n" + action_prompt + constraint
 
         return [
             {"role": "system", "content": system_prompt},

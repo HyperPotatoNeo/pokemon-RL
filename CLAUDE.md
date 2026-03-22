@@ -50,7 +50,8 @@ Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 | `src/pokemon_rl/env.py` | PokemonBattleEnv (MultiTurnEnv hooks) |
 | `src/pokemon_rl/data.py` | TrajectoryLogger (JSONL battle logging) |
 | `tests/conftest.py` | Fixtures, capability detection, skip markers |
-| `scripts/` | Cluster-specific (gitignored, see scripts/README.md) |
+| `scripts/` | Generic scripts (setup, test, launch); cluster-specific in `local_scripts/` |
+| `configs/pokemon/` | RL training TOML configs (selfplay, vs_heuristic, test) |
 
 ## Dependencies
 
@@ -89,20 +90,23 @@ bash scripts/run_tests.sh -m integration -v
 | `docs/rewards.md` | Before changing reward logic — configurable system, single source of truth |
 | `docs/selfplay.md` | Before touching selfplay code — force-switch handling, hooks buffering |
 | `docs/testing.md` | Before writing tests — no-fall-through philosophy, mock patterns |
+| `docs/rl_training.md` | Before RL training work — configs, prompt construction, launching |
 | `docs/deployment.md` | Before running on Perlmutter — containers, Showdown, SLURM |
 | `docs/api.md` | API reference for all public classes and methods |
 
 ## Current Status
 
-Phase 4 verifiers integration complete. 260 tests (217 unit + 43 integration), 4 GPU tests passing.
-`PokemonBattleEnv` inherits `vf.MultiTurnEnv` (conditional). Uses `play_mode`
-(not opponent_mode), `state["game_turn"]` (not turn), `step["extras"]["agent_idx"]`
-(not player_idx), `_assign_rewards(state)` (not trajectory, won).
+Phase 5 RL training integration complete. 298+ tests passing.
+Full pipeline validated: Qwen3-4B self-play GRPO on gen9randombattle, 3 training steps,
+balanced ~50/50 win/loss rewards.
 
 Key details:
-- `system_prompt=None` (default) preserves the translator's system prompt (e.g. pokechamp's rich prompt)
-- `step_reward_fn` output is folded into `step["reward"]` by `_assign_rewards` (extras dropped at IPC)
-- Move/switch name normalization strips all non-alphanumeric chars (matches poke-env's `to_id_str`)
+- pokechamp_io prompts include CoT constraint: forces 3-sentence reasoning inside JSON
+- `trajectory_strategy = "branching"` — each turn = separate TrainingSample (CRITICAL)
+- `rollouts_per_example = batch_size` — batch-level GRPO normalization
+- `[inference.server] port = 8001` — must differ from Showdown port 8000
+- `[trainer.model.ac] freq = 1` — gradient checkpointing prevents OOM on single GPU
+- Configs in `configs/pokemon/`, generic launch in `scripts/launch_rl.sh`
 - Cross-node: requires `--net=host` containers (pokechamp fork patched ws:// for non-localhost)
 
-See `PROGRESS.md` for latest updates and `TODO.md` for roadmap.
+See `docs/rl_training.md` for the full training guide.

@@ -32,10 +32,64 @@ Usage (standalone testing):
 
 from __future__ import annotations
 
+import logging
+import os
+import random as _random
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from pokemon_rl.translator import StateTranslator
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Team pool factory
+# ---------------------------------------------------------------------------
+
+def random_team_pool(team_dir: str) -> Callable[[], str]:
+    """Load team files from a directory and return a callable that picks randomly.
+
+    Args:
+        team_dir: Path to directory containing .txt team files (Showdown paste format).
+            Relative paths are resolved against the pokemon-rl package root
+            (so TOML configs work regardless of the orchestrator's CWD).
+
+    Returns:
+        Callable that returns a random team string on each call.
+
+    Raises:
+        FileNotFoundError: If team_dir does not exist.
+        ValueError: If team_dir contains no .txt files.
+    """
+    if not os.path.isabs(team_dir):
+        # Resolve relative paths against the pokemon-rl package root
+        # (2 levels up from src/pokemon_rl/env.py)
+        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)
+        )))
+        team_dir = os.path.join(pkg_root, team_dir)
+
+    if not os.path.isdir(team_dir):
+        raise FileNotFoundError(f"Team directory not found: {team_dir}")
+
+    teams: list[str] = []
+    for fname in sorted(os.listdir(team_dir)):
+        if fname.endswith(".txt"):
+            path = os.path.join(team_dir, fname)
+            with open(path) as f:
+                content = f.read().strip()
+            if content:
+                teams.append(content)
+
+    if not teams:
+        raise ValueError(f"No .txt team files found in {team_dir}")
+
+    def _pick() -> str:
+        return _random.choice(teams)
+
+    return _pick
 
 # ---------------------------------------------------------------------------
 # Conditional verifiers import — works with and without verifiers installed
@@ -150,6 +204,16 @@ class PokemonBattleEnv(_EnvBase):
         num_battles: Dataset size (number of battle placeholders)
     """
 
+    # Parameters that PokemonBattleEnv explicitly handles.
+    # Anything not in this set (and not consumed by the verifiers base class)
+    # will trigger a warning so that TOML typos are caught early.
+    _KNOWN_KWARGS = frozenset({
+        "battle_format", "port", "server_host", "play_mode", "opponent_type",
+        "observation_format", "system_prompt", "reward_win", "reward_loss",
+        "reward_draw", "step_reward_fn", "max_game_turns", "num_battles",
+        "team_dir", "team_fn", "score_rollouts",
+    })
+
     def __init__(
         self,
         battle_format: str = "gen1randombattle",
@@ -161,14 +225,26 @@ class PokemonBattleEnv(_EnvBase):
         system_prompt: str | None = None,
         reward_win: float = 1.0,
         reward_loss: float = 0.0,
-        reward_draw: float = 0.0,
+        reward_draw: float = 0.0,  # deliberately same as loss — no draw exploitation
         step_reward_fn: Callable | None = None,
         max_game_turns: int = 200,
         num_battles: int = 1000,
+        team_dir: str | None = None,
+        team_fn: Callable[[], str] | None = None,
         **kwargs,
     ):
         if play_mode not in ("single", "self_play"):
             raise ValueError(f"Unknown play_mode: {play_mode}")
+
+        # --- Warn about unrecognized kwargs ---
+        for key in kwargs:
+            if key not in self._KNOWN_KWARGS:
+                warnings.warn(
+                    f"PokemonBattleEnv received unrecognized keyword argument: "
+                    f"'{key}'. Check for typos in your config.",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
         self.battle_format = battle_format
         self.port = port
@@ -184,6 +260,24 @@ class PokemonBattleEnv(_EnvBase):
         # Explicit string = override with custom prompt
         self._system_prompt = system_prompt
         self.translator = StateTranslator(format_style=observation_format)
+
+        # --- Team handling ---
+        # team_fn takes priority over team_dir.
+        # team_dir creates a team_fn via random_team_pool().
+        # Neither provided → team_fn is None (OK for random battle formats).
+        if team_fn is not None:
+            self.team_fn = team_fn
+        elif team_dir is not None:
+            self.team_fn = random_team_pool(team_dir)
+        else:
+            self.team_fn = None
+            # Warn if non-random format has no team source (B4)
+            if "random" not in battle_format.lower():
+                logger.warning(
+                    f"battle_format='{battle_format}' is not a random format "
+                    f"but no team_dir or team_fn was provided. "
+                    f"Showdown may reject games or assign random teams."
+                )
 
         if _HAS_VERIFIERS:
             # Prevent score_rollouts=False from being passed via kwargs (C7)
@@ -239,6 +333,9 @@ class PokemonBattleEnv(_EnvBase):
         state["won"] = None
         state["truncated"] = False
         state["trajectory"] = []  # Always reset (stale steps from retries)
+        # Fields required by branch_rollout (prime-rl/orchestrator/trajectories.py)
+        state.setdefault("error", None)
+        state.setdefault("example_id", "battle")
 
         try:
             from pokemon_rl.battle import BattleManager
@@ -251,7 +348,13 @@ class PokemonBattleEnv(_EnvBase):
             state["manager"] = manager
 
             if self.play_mode == "self_play":
-                pending = await manager.start_battle_selfplay()
+                # Each player gets an independently-sampled team
+                p1_team = self.team_fn() if self.team_fn else None
+                p2_team = self.team_fn() if self.team_fn else None
+                pending = await manager.start_battle_selfplay(
+                    player1_team=p1_team,
+                    player2_team=p2_team,
+                )
                 agents = [_AgentContext(0), _AgentContext(1)]
                 state["_agents"] = agents
                 state["_pending_states"] = list(pending)
@@ -263,9 +366,24 @@ class PokemonBattleEnv(_EnvBase):
                     agents[pending[0][0]].battle = pending[0][1]
                     if len(pending) > 1:
                         agents[pending[1][0]].battle = pending[1][1]
+            elif self.opponent_type == "ladder":
+                # Ladder mode: match via Showdown matchmaking (e.g. vs Kakuna)
+                player_team = self.team_fn() if self.team_fn else None
+                battle = await manager.start_battle_ladder(
+                    player_team=player_team,
+                )
+                state["_agents"] = [_AgentContext(0)]
+                state["_agents"][0].battle = battle
+                state["_current_agent_idx"] = 0
+                if battle is None:
+                    state["game_over"] = True
             else:
+                player_team = self.team_fn() if self.team_fn else None
+                opponent_team = self.team_fn() if self.team_fn else None
                 battle = await manager.start_battle(
-                    opponent_type=self.opponent_type
+                    opponent_type=self.opponent_type,
+                    player_team=player_team,
+                    opponent_team=opponent_team,
                 )
                 state["_agents"] = [_AgentContext(0)]
                 state["_agents"][0].battle = battle
@@ -376,6 +494,26 @@ class PokemonBattleEnv(_EnvBase):
         completion = trajectory_step.get("completion", "")
         response_text = self.translator.extract_completion_text(completion)
 
+        # Probe: dump first turn's prompt + response to file for inspection
+        probe_path = os.environ.get("POKEMON_RL_PROBE_PATH")
+        if probe_path and not os.path.exists(probe_path):
+            try:
+                prompt = trajectory_step.get("prompt", [])
+                with open(probe_path, "w") as f:
+                    f.write("=== POKEMON RL PROBE: First Turn ===\n\n")
+                    f.write(f"Agent index: {agent_idx}\n")
+                    f.write(f"Game turn: {battle.turn if battle else '?'}\n\n")
+                    f.write("--- PROMPT (system + user messages) ---\n\n")
+                    for msg in prompt:
+                        if isinstance(msg, dict):
+                            f.write(f"[{msg.get('role', '?')}]\n")
+                            f.write(f"{msg.get('content', '')}\n\n")
+                    f.write("--- LLM RESPONSE ---\n\n")
+                    f.write(f"{response_text}\n\n")
+                    f.write("--- PARSE RESULT ---\n\n")
+            except Exception:
+                pass  # Probe must never break the pipeline
+
         # 2. Parse action
         try:
             action = (
@@ -405,7 +543,10 @@ class PokemonBattleEnv(_EnvBase):
         })
         trajectory_step["extras"] = extras
 
-        # 4. Record in trajectory + agent's step list
+        # 4. Ensure temperature is set (required by branch_rollout)
+        trajectory_step.setdefault("temperature", 1.0)
+
+        # 5. Record in trajectory + agent's step list
         state["trajectory"].append(trajectory_step)
         agent.steps.append(trajectory_step)
 
@@ -693,8 +834,12 @@ class PokemonBattleEnv(_EnvBase):
                 )
 
             # Single-agent mode
+            player_team = self.team_fn() if self.team_fn else None
+            opponent_team = self.team_fn() if self.team_fn else None
             battle = await manager.start_battle(
-                opponent_type=self.opponent_type
+                opponent_type=self.opponent_type,
+                player_team=player_team,
+                opponent_team=opponent_team,
             )
             turn_count = 0
 
@@ -752,7 +897,12 @@ class PokemonBattleEnv(_EnvBase):
         trajectory: list,
     ) -> dict:
         """Self-play standalone: both sides use action_fn."""
-        pending = await manager.start_battle_selfplay()
+        p1_team = self.team_fn() if self.team_fn else None
+        p2_team = self.team_fn() if self.team_fn else None
+        pending = await manager.start_battle_selfplay(
+            player1_team=p1_team,
+            player2_team=p2_team,
+        )
         step_count = 0
 
         while pending and step_count < self.max_game_turns * 2:

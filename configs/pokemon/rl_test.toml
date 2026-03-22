@@ -1,0 +1,52 @@
+# Test config: minimal RL loop for integration testing.
+# Uses gen9randombattle (no teams needed) with small batch/steps.
+max_steps = 3
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "pokemon-rl-test"
+name = "integration-test"
+
+[orchestrator]
+batch_size = 4               # Just 4 games
+rollouts_per_example = 4     # = batch_size: batch-level normalization
+trajectory_strategy = "branching"
+
+[orchestrator.client]
+base_url = ["http://localhost:8001/v1"]   # Match inference.server.port
+
+[orchestrator.sampling]
+max_tokens = 800             # Must be enough for CoT reasoning + JSON action
+temperature = 1.0
+
+[[orchestrator.env]]
+id = "pokemon_rl"
+name = "pokemon-test"
+
+[orchestrator.env.args]
+battle_format = "gen9randombattle"   # No teams needed
+play_mode = "self_play"
+port = 8000
+observation_format = "pokechamp_io"
+reward_win = 1.0
+reward_loss = 0.0
+reward_draw = 0.0           # Deliberate: draws = losses. Do not change without discussion.
+max_game_turns = 50          # Shorter games
+num_battles = 100
+
+[inference]
+
+[inference.server]
+port = 8001   # Avoid conflict with Showdown on port 8000
+
+[trainer.model.ac]
+freq = 1   # Full gradient checkpointing — prevents OOM on single A100-80GB
+
+[trainer.optim]
+lr = 3e-6
+
+[ckpt]
+interval = 1                 # Checkpoint every step

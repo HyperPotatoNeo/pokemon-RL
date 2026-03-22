@@ -1,5 +1,65 @@
 # Progress
 
+## 2026-03-21: Phase 5 Test Suite — Complete
+
+### Done
+- **5 test files written**: 117 tests total
+  - `test_phase5_unit.py` — 81 tests (73 passing, 8 skipped for unimplemented features)
+  - `test_phase5_integration.py` — 14 tests (Showdown + real battles)
+  - `test_phase5_verifiers.py` — 10 tests (GPU + vLLM pipeline)
+  - `test_phase5_rl_loop.py` — 5 tests (full RL training probes)
+  - `test_phase5_multinode.py` — 7 tests (cross-node validation)
+- **Testing protocol**: `PHASE5_TESTING_PROTOCOL.md` with execution order, failure triage, graduation criteria
+- **Anti-reward-hacking**: All 8 safeguards verified (fallback randomness, parse tracking, advantage signs, draw=loss, truncation=draw, step_reward folding, logprobs non-zero)
+- **Adversarial reviewed**: 1 BLOCKING (terastallize flag verification — fixed), 11 HIGH findings addressed
+- **TDD approach**: Tests define the contract for implementation; 8 tests skip until Phase 5 code is written
+
+### Implementation unblocking order
+1. `random_team_pool()` + `team_dir` in env.py → unblocks 6 tests
+2. AbyssalPlayer in players.py → unblocks 1 test
+3. Unrecognized kwargs validation → unblocks 1 test
+4. Ladder mode in battle.py → unblocks Kakuna tests
+5. TOML configs + launch scripts → unblocks full RL loop tests
+
+---
+
+## 2026-03-21: Phase 5 RL Training Integration — Plan Complete
+
+### Done
+- **Comprehensive plan**: `PHASE5_RL_PLAN.md` (v2, post adversarial review)
+  - 2 adversarial code reviews + 1 consistency check, all against source code
+  - 14 findings integrated (3 BLOCKING, 3 HIGH, 4 MEDIUM, 4 LOW/SIMPLIFICATION)
+- **Architecture designed**: 1-node (3 inf + 1 train GPU) and 2-node layouts
+- **Config designed**: 3 TOML templates (self-play, heuristic, test)
+  - `trajectory_strategy = "branching"` (CRITICAL — caught by review, default "interleaved" would corrupt data)
+  - `rollouts_per_example = batch_size` for batch-level GRPO normalization (no code changes needed)
+  - Full fine-tuning (not LoRA), Qwen3-4B-Instruct-2507
+  - `reward_draw = 0.0` deliberately same as loss (user decision)
+- **Team handling designed**: `team_fn: Callable` interface with `random_team_pool()` factory
+  - Random from 13-team gen9ou pool for both sides
+  - Scalable to fixed/curriculum team selection in Phase 6
+- **Kakuna integration designed**: Separate metamon process via Showdown ladder
+  - Kakuna uses competitive teams, RL agent uses random from 13-pool
+  - ~20 lines code change (BattleManager.start_battle_ladder + opponent_type="ladder")
+- **Testing plan**: 24 tests across 5 files (T1-T7b unit, T8-T12 battle, T16-T19 verifiers,
+  T20-T21 RL loop, T22-T24 multi-node), parameterized for self-play/heuristic/Kakuna × 1/2 nodes
+- **Next**: Write test cases (PHASE5_TEST_AGENT_INSTRUCTIONS.md), then implement
+
+### Key design decisions
+- **Batch-level normalization**: `rollouts_per_example = batch_size`. All games in one GRPO group.
+  Each game is independent; batch mean is the baseline. Config-only change, no code needed.
+- **Pre-set advantages for self-play**: Necessary because score_group propagates state-level
+  (P0's) advantage to ALL steps including P1's (wrong sign). Fixed baseline `(win+loss)/2` correct.
+- **Full FT not LoRA**: User decision. Fits on 1× A100-80GB (~66-72GB with AdamW mixed precision).
+  Gradient checkpointing if OOM.
+- **Kakuna via ladder**: Both sides connect to same Showdown. Private server = they always match.
+  Kakuna keeps competitive teams (trained on them). Future: deterministic pairing via challenges.
+
+### Bugs found during analysis
+- B1: LocalSim format parameter not passed (system prompt says wrong format name)
+- B2: `**kwargs` silently swallows unrecognized TOML args (no validation)
+- B3: No team handling in PokemonBattleEnv (gen9ou requires teams — BLOCKING)
+
 ## 2026-03-21: Post-Review Bug Fixes — 10 bugs fixed, 4 test gaps fixed
 
 ### Done

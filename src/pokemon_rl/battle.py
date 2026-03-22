@@ -187,6 +187,51 @@ class BattleManager:
             self._finished = True
         return state
 
+    # ------------------------------------------------------------------
+    # Ladder mode (for Kakuna / external opponents via Showdown matchmaking)
+    # ------------------------------------------------------------------
+
+    async def start_battle_ladder(
+        self,
+        player_team: str | None = None,
+    ) -> Any:
+        """Start a battle via Showdown's ladder matchmaking.
+
+        The player searches the ladder; Showdown matches against whoever
+        else is searching (e.g., a Kakuna process). No opponent Player is
+        created — the opponent is an external process.
+
+        Returns the first Battle state, or None if battle failed to start.
+        """
+        if self._started:
+            raise RuntimeError("Battle already started. Create a new BattleManager.")
+
+        from pokemon_rl.players import ControllablePlayer
+        from poke_env.concurrency import POKE_LOOP
+
+        server_config = self._get_server_config()
+
+        self._player = ControllablePlayer.create(
+            battle_format=self.battle_format,
+            server_config=server_config,
+            team=player_team,
+        )
+
+        # _ladder(1) is the internal coroutine — NOT ladder() which wraps
+        # with handle_threaded_coroutines (would deadlock on POKE_LOOP).
+        # Same pattern as start_battle using _battle_against.
+        self._battle_future = asyncio.run_coroutine_threadsafe(
+            self._player._ladder(1),
+            POKE_LOOP,
+        )
+        self._started = True
+        self._selfplay = False
+
+        state = await self._poke_loop_get(self._player.state_queue)
+        if state is None:
+            self._finished = True
+        return state
+
     def _check_battle_future(self) -> None:
         """Check if the battle coroutine raised an exception.
 

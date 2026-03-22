@@ -213,6 +213,10 @@ def create_opponent(
             team=team,
         )
 
+    elif opponent_type == "abyssal":
+        from poke_env.player.baselines import AbyssalPlayer
+        return AbyssalPlayer(**base_kwargs)
+
     elif opponent_type == "controllable":
         return ControllablePlayer.create(
             battle_format=battle_format,
@@ -225,5 +229,5 @@ def create_opponent(
     else:
         raise ValueError(
             f"Unknown opponent_type: {opponent_type}. "
-            f"Expected: random, max_damage, callback, controllable"
+            f"Expected: random, max_damage, abyssal, callback, controllable"
         )
