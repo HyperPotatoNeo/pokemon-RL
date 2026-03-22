@@ -88,7 +88,7 @@ RL training configs live in `configs/pokemon/`. Each is a prime-rl TOML config w
 |--------|-----------|-------------|
 | `rl_test.toml` | self_play | Integration testing — 3 steps, batch_size=4, gen9randombattle |
 | `rl_selfplay.toml` | self_play | Production self-play — 100 steps, batch_size=16, gen9ou |
-| `rl_vs_heuristic.toml` | single | Production vs heuristic — 100 steps, batch_size=16, gen9ou |
+| `rl_vs_heuristic.toml` | single | Production vs heuristic bot — 100 steps, batch_size=16, gen9ou (default: max_damage, also: random, abyssal) |
 
 ### Config Sections
 

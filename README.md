@@ -146,7 +146,7 @@ rl @ /path/to/pokemon-rl/configs/pokemon/rl_selfplay.toml
 | Config | Mode | Description |
 |--------|------|-------------|
 | `rl_selfplay.toml` | self_play | Production self-play training (gen9ou) |
-| `rl_vs_heuristic.toml` | single | Production vs max_damage heuristic (gen9ou) |
+| `rl_vs_heuristic.toml` | single | Production vs heuristic bot (gen9ou, default: max_damage) |
 | `rl_test.toml` | self_play | Integration testing (3 steps, batch=4) |
 
 **Critical**: All configs set `trajectory_strategy = "branching"`. Each turn becomes a separate TrainingSample. Do not remove this.
