@@ -586,7 +586,7 @@ class PokemonBattleEnv(_EnvBase):
         state["trajectory"].append(trajectory_step)
         agent.steps.append(trajectory_step)
 
-        # 5. Record conversation history (enables future episodic mode)
+        # 6. Record conversation history (enables future episodic mode)
         prompt_messages = trajectory_step.get("prompt", [])
         agent.message_history.append({
             "role": "user",
@@ -597,7 +597,7 @@ class PokemonBattleEnv(_EnvBase):
             "content": response_text,
         })
 
-        # 6. Advance game
+        # 7. Advance game
         battle_before = battle
         manager = state.get("manager")
         next_battle = None
@@ -624,7 +624,7 @@ class PokemonBattleEnv(_EnvBase):
                     f"Battle step failed: {type(e).__name__}: {e}"
                 ) from e
 
-        # 7. Optional per-step reward shaping
+        # 8. Optional per-step reward shaping
         if self.step_reward_fn and battle_before:
             trajectory_step["extras"]["step_reward"] = self.step_reward_fn(
                 battle_before, next_battle, action, agent_idx

@@ -95,7 +95,7 @@ player = ControllablePlayer.create(
 
 ```python
 opponent = create_opponent(
-    opponent_type: str,    # "random", "max_damage", "callback", "controllable"
+    opponent_type: str,    # "random", "max_damage", "abyssal", "callback", "controllable"
     battle_format: str,
     server_config: Any,
     team: str = None,

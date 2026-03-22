@@ -18,7 +18,7 @@ PokemonBattleEnv(
 
 ### Single Source of Truth
 
-`_compute_terminal_reward(won)` at `env.py:539-543`:
+`_compute_terminal_reward(won)` at `env.py:725`:
 
 ```python
 def _compute_terminal_reward(self, won: bool | None) -> float:
@@ -27,7 +27,7 @@ def _compute_terminal_reward(self, won: bool | None) -> float:
     return self.reward_win if won else self.reward_loss
 ```
 
-`_assign_rewards(state)` at `env.py:545-591` handles both modes:
+`_assign_rewards(state)` at `env.py:731` handles both modes:
 - **Single-agent**: All steps get the same reward.
 - **Self-play**: P0 and P1 get explicit per-player rewards (not `1 - reward`).
   When rewards are non-uniform, pre-sets `step["advantage"]` using config-derived baseline `(reward_win + reward_loss) / 2`.
@@ -42,18 +42,18 @@ These two methods are called by:
 
 ```python
 if won is None:
+    p0_reward = self.reward_draw
     p1_reward = self.reward_draw
-    p2_reward = self.reward_draw
-elif won:  # P1 won
-    p1_reward = self.reward_win
-    p2_reward = self.reward_loss
-else:      # P2 won
+elif won:  # P0 won
+    p0_reward = self.reward_win
     p1_reward = self.reward_loss
-    p2_reward = self.reward_win
+else:      # P1 won
+    p0_reward = self.reward_loss
+    p1_reward = self.reward_win
 ```
 
 This works for any reward scale:
-- Binary: `reward_win=1, reward_loss=0` → P1=1.0, P2=0.0
+- Binary: `reward_win=1, reward_loss=0` → P0=1.0, P1=0.0
 - Symmetric: `reward_win=1, reward_loss=-1` → P1=1.0, P2=-1.0
 - Custom: `reward_win=10, reward_loss=-10, reward_draw=0.5`
 
@@ -68,7 +68,7 @@ The old code used `1.0 - reward` which only works for [0, 1] scale.
 | Truncation | `None` | `True` | `reward_draw` (0.0) |
 | Crash/error | `None` | `False` | `reward_draw` (0.0) |
 
-Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The truncation check is in `game_over` (`@vf.stop` hook) at `env.py:291`.
+Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The truncation check is in `game_over` (`@vf.stop` hook) at `env.py:444`.
 
 ### Metrics
 
@@ -158,7 +158,7 @@ When rewards are uniform (single-agent, or self-play draw), advantage is left as
 
 ## Passthrough Rubric
 
-`_passthrough_reward` at `env.py:57` is used for prime-rl's verifiers integration:
+`_passthrough_reward` at `env.py:114` is used for prime-rl's verifiers integration:
 
 ```python
 def _passthrough_reward(state, **kwargs):
