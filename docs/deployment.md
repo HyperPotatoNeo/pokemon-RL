@@ -95,9 +95,11 @@ export UV_CACHE_DIR=/pscratch/sd/s/siddart2/uv-cache
 cd /pscratch/sd/s/siddart2/pokemon-rl
 source .venv/bin/activate
 
-uv pip install -e /pscratch/sd/s/siddart2/pokechamp  # poke-env + deps
-uv pip install -e ".[test]"                           # pokemon-rl + pytest
+uv pip install -e vendor/pokechamp  # poke-env fork (ws:// fix) + deps
+uv pip install -e ".[test]"         # pokemon-rl + pytest
 ```
+
+**Always use the submodule** (`vendor/pokechamp`), not the external `/pscratch/sd/s/siddart2/pokechamp`. The submodule has the `ws://` fix for cross-node WebSocket connections. The external copy uses `wss://` which hangs on non-localhost Showdown servers.
 
 ## Showdown Server
 

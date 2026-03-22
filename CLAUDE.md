@@ -55,13 +55,13 @@ Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 ## Dependencies
 
 The project has its own `.venv`. Setup installs:
-1. **pokechamp** from local path — brings poke_env, torch, and all transitive deps
+1. **pokechamp** from submodule (`vendor/pokechamp`) — brings poke_env fork (ws:// fix), torch, and all transitive deps
 2. **pokemon-rl** itself — test deps (pytest, pytest-asyncio)
 
 ```bash
 # On compute node (see scripts/setup_node.sh):
-uv pip install -e /path/to/pokechamp   # brings poke-env + deps
-uv pip install -e ".[test]"            # our package
+uv pip install -e vendor/pokechamp    # poke-env fork + deps
+uv pip install -e ".[test]"           # our package
 ```
 
 ## Test Markers
