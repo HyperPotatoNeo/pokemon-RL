@@ -1,3 +1,4 @@
 [submodule "vendor/pokechamp"]
 	path = vendor/pokechamp
-	url = https://github.com/sethkarten/pokechamp.git
+	url = https://github.com/HyperPotatoNeo/pokechamp.git
+	branch = deepthink
