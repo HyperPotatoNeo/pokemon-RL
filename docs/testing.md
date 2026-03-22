@@ -30,15 +30,12 @@ A test that only checks `assert result is not None` passes by accident if the fu
 ## Running Tests
 
 ```bash
-# Login node (unit tests only — no Showdown, no poke-env for some tests):
+# Unit tests (no Showdown needed):
 .venv/bin/python -m pytest -m unit -v
 
-# Compute node via SSH (all tests):
-bash scripts/run_tests_remote.sh nid008268 -v
-
-# Compute node (specific markers):
-bash scripts/run_tests_remote.sh nid008268 -m integration -v
-bash scripts/run_tests_remote.sh nid008268 -m unit -v
+# All tests (Showdown must be running on SHOWDOWN_PORT):
+bash scripts/run_tests.sh -v
+bash scripts/run_tests.sh -m integration -v
 ```
 
 ## Test File Map

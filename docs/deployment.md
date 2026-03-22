@@ -1,150 +1,74 @@
-# Deployment on NERSC Perlmutter
+# Deployment
 
-pokemon-rl runs on NERSC's Perlmutter supercomputer. Login nodes can run unit tests; GPU compute nodes run integration tests and training.
+pokemon-rl can run on any system with Python 3.10+, Node.js, and optionally GPUs for LLM inference. This guide covers general setup and HPC cluster deployment.
 
-## Environment Overview
-
-```
-Login node:  256 CPUs, no GPUs, no podman-hpc, no Showdown
-             Can: edit files, run unit tests, use git
-             Cannot: run poke-env battles, use GPUs
-
-Compute node: 4x A100-80GB, podman-hpc containers, Showdown server
-              Can: everything
-              Requires: salloc allocation
-```
-
-## Setup Steps
-
-### 1. Allocate a Compute Node
+## Quick Start (Any System)
 
 ```bash
-# From the _CAP_tinker reservation (if available):
-salloc -A m5017_g --reservation=_CAP_tinker -C "gpu&hbm80g" \
-  --qos=interactive --time 4:00:00 --gpus-per-node 4 -N 1 --no-shell
-
-# Without reservation:
-salloc -A m5017 -C "gpu&hbm80g" --qos=interactive \
-  --time 4:00:00 --gpus-per-node 4 -N 1 --no-shell
+git clone --recurse-submodules https://github.com/HyperPotatoNeo/pokemon-RL.git
+cd pokemon-RL
+bash scripts/setup_node.sh
+bash scripts/run_tests.sh -m unit -v
 ```
 
-Check allocated node: `squeue --me`
+## Environment Variables
 
-### 2. Run Setup Script
+All scripts use environment variables with sensible defaults:
 
-```bash
-# SSH to the node and run setup:
-ssh nid008268 "export HOME=/pscratch/sd/s/siddart2 && \
-  export PODMANHPC_PODMAN_BIN=/global/common/shared/das/podman-4.7.0/bin/podman && \
-  bash /pscratch/sd/s/siddart2/pokemon-rl/scripts/setup_node.sh"
-```
-
-`setup_node.sh` does:
-1. Starts `skyrl` container (detached, with GPU passthrough)
-2. Starts Showdown server inside container (port 8000)
-3. Creates `.venv`, installs pokechamp + pokemon-rl
-
-### 3. Run Tests
-
-```bash
-bash scripts/run_tests_remote.sh nid008268 -v
-```
-
-## Container Details
-
-Image: `docker.io/novaskyai/skyrl-train-ray-2.51.1-py3.12-cu12.8`
-- Python 3.12, CUDA 12.8, Ray 2.51.1, `uv` package manager
-- No pip/conda — use `uv pip install`
-
-```bash
-# Container launch (done by setup_node.sh):
-podman-hpc run --rm -d \
-  --user "$(id -u):$(id -g)" --replace --name skyrl \
-  --group-add keep-groups --userns keep-id --gpu --nccl --shm-size=8g \
-  -e SCRATCH -e HOME \
-  -v "$HOME":"$HOME" -w "$HOME/pokemon-rl" \
-  docker.io/novaskyai/skyrl-train-ray-2.51.1-py3.12-cu12.8 \
-  sleep infinity
-```
-
-Key flags:
-- `--gpu --nccl` — GPU passthrough with NCCL support
-- `--userns keep-id` — UID mapping (files on Lustre accessible)
-- `--shm-size=8g` — Shared memory for IPC
-- `-v "$HOME":"$HOME"` — Mount scratch filesystem
-
-### Running Commands Inside Container
-
-```bash
-# Interactive:
-podman-hpc exec -it skyrl /bin/bash
-
-# Non-interactive (from login node via SSH):
-ssh nid008268 "export HOME=/pscratch/sd/s/siddart2 && \
-  export PODMANHPC_PODMAN_BIN=/global/common/shared/das/podman-4.7.0/bin/podman && \
-  podman-hpc exec skyrl bash /path/to/script.sh"
-```
-
-**Nested quoting breaks.** Always write commands to a script file first, then execute the script.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `POKEMON_RL_DIR` | Auto-detected | Path to pokemon-rl repo |
+| `NODE_BIN` | `node` | Path to Node.js binary |
+| `SHOWDOWN_PORT` | `8000` | Showdown server port |
+| `SHOWDOWN_PATH` | `vendor/pokechamp/pokemon-showdown` | Showdown directory (env override for tests) |
+| `NODE_PATH` | `node` | Node.js binary (env override for tests) |
+| `VLLM_HOST` | `localhost` | vLLM server hostname (GPU tests) |
+| `VLLM_PORT` | `8001` | vLLM server port (GPU tests) |
+| `MODEL_NAME` | `Qwen/Qwen3-4B-Instruct-2507` | Model for GPU tests |
+| `REMOTE_NODE` | unset | Remote hostname for multinode tests |
 
 ## Package Installation
 
 ```bash
-# Inside container:
-export UV_CACHE_DIR=/pscratch/sd/s/siddart2/uv-cache
-cd /pscratch/sd/s/siddart2/pokemon-rl
+cd pokemon-rl
 source .venv/bin/activate
 
-uv pip install -e vendor/pokechamp  # poke-env fork (ws:// fix) + deps
-uv pip install -e ".[test]"         # pokemon-rl + pytest
+pip install -e vendor/pokechamp    # poke-env fork (ws:// fix) + deps
+pip install -e ".[test]"           # pokemon-rl + pytest
 ```
 
-**Always use the submodule** (`vendor/pokechamp`), not the external `/pscratch/sd/s/siddart2/pokechamp`. The submodule has the `ws://` fix for cross-node WebSocket connections. The external copy uses `wss://` which hangs on non-localhost Showdown servers.
+**Always use the submodule** (`vendor/pokechamp`). It contains the poke-env fork with the `ws://` fix for non-localhost Showdown servers. The upstream poke-env uses `wss://` for non-localhost, which hangs on self-hosted servers without SSL.
 
 ## Showdown Server
 
-Pokemon Showdown is a Node.js application. Node.js binary is installed at:
-`/pscratch/sd/s/siddart2/node-v20.18.1-linux-x64/bin/node`
-
-Showdown directory: `/pscratch/sd/s/siddart2/pokechamp/pokemon-showdown`
+Pokemon Showdown is a Node.js application. `setup_node.sh` clones it into `vendor/pokechamp/pokemon-showdown` (gitignored) if not already present.
 
 ```bash
-# Start manually (inside container):
-export PATH=/pscratch/sd/s/siddart2/node-v20.18.1-linux-x64/bin:$PATH
-cd /pscratch/sd/s/siddart2/pokechamp/pokemon-showdown
+# Manual start:
+cd vendor/pokechamp/pokemon-showdown
 node pokemon-showdown start --no-security --port 8000
 ```
-
-`ShowdownEngine` in `engine.py` can also manage the process, but `setup_node.sh` starts it separately so it persists across test runs.
 
 ## Multi-Node Battles
 
 For cross-node play (e.g., 2 GPU nodes running different models):
 
-### Requirements
+1. **Host networking required.** Default container bridge networking isolates the network — players can't reach Showdown on another node. Use `--net=host` on your container.
 
-1. **`--net=host` on all containers.** Default bridge networking isolates the container — players cannot reach a Showdown server on another node. Use `scripts/_setup_node_hostnet.sh` instead of `setup_node.sh`:
-   ```bash
-   ssh nidXXXXXX "export HOME=$SCRATCH && \
-     export PODMANHPC_PODMAN_BIN=/global/common/shared/das/podman-4.7.0/bin/podman && \
-     bash $SCRATCH/pokemon-rl/scripts/_setup_node_hostnet.sh true"
-   ```
-
-2. **One Showdown server, all players connect to it.** Run Showdown on one node, set `server_host` on others:
+2. **One Showdown server, all players connect to it:**
    ```python
-   BattleManager(server_host="nid008268", port=8000)
+   BattleManager(server_host="other-hostname", port=8000)
    ```
 
-3. **ws:// fix in pokechamp fork.** poke-env's `listen()` uses `wss://` (SSL) for any non-localhost server. Self-hosted Showdown doesn't have SSL, causing the WebSocket to hang on TLS handshake. The pokechamp fork at `vendor/pokechamp/poke_env/ps_client/ps_client.py:376` has been patched to use `ws://` for the online path. This makes cross-node battles work natively with `BattleManager(server_host="nid008268")`.
+3. **ws:// fix in pokechamp fork.** poke-env's `listen()` uses `wss://` (SSL) for any non-localhost server. Self-hosted Showdown doesn't have SSL, causing the WebSocket to hang on TLS handshake. The pokechamp fork at `vendor/pokechamp/poke_env/ps_client/ps_client.py:376` uses `ws://` instead, making cross-node battles work natively.
 
-### GPU Tests (vLLM)
+## GPU Tests (vLLM)
 
 The GPU tests (`tests/test_phase4_gpu.py`) need vLLM serving a model:
 
 ```bash
-# Inside container on the GPU node:
+# Start vLLM:
 source .venv/bin/activate
-export HF_HOME=/pscratch/sd/s/siddart2/.cache/huggingface
 python -m vllm.entrypoints.openai.api_server \
     --model Qwen/Qwen3-4B-Instruct-2507 \
     --port 8001 --max-model-len 4096 \
@@ -153,23 +77,23 @@ python -m vllm.entrypoints.openai.api_server \
 # Run GPU tests:
 VLLM_HOST=localhost VLLM_PORT=8001 MODEL_NAME=Qwen/Qwen3-4B-Instruct-2507 \
 SHOWDOWN_PORT=8000 python -m pytest tests/test_phase4_gpu.py -v
+
+# Multi-node tests (from a different node):
+REMOTE_NODE=showdown-hostname \
+  python -m pytest tests/test_phase4_gpu.py -k multinode -v
 ```
+
+## HPC / Container Notes
+
+For HPC clusters with container runtimes (podman, Singularity, etc.):
+
+- Use `--net=host` for multi-node
+- Use `--gpu` flags for GPU passthrough
+- Mount your scratch filesystem into the container
+- Create cluster-specific scripts in `local_scripts/` (gitignored)
+- The `poke_env` symlink at project root is required for pokechamp's `data_cache.py` which uses hardcoded relative paths (`./poke_env/data/static/...`)
 
 ## Filesystem Notes
 
-- **$SCRATCH** (`/pscratch/sd/s/siddart2/`): Fast Lustre, purged periodically. All code and data here.
-- **$HOME** (`/global/homes/s/siddart2/`): Persistent but small. Scripts and configs.
-- Inside container, `HOME` is overridden to `$SCRATCH`.
-- poke-env is installed into site-packages via `pip install -e pokechamp`.
+- poke-env is installed into site-packages via `pip install -e vendor/pokechamp`.
 - A `poke_env` **symlink** exists at the project root → `vendor/pokechamp/poke_env`. This is required because pokechamp's `data_cache.py` uses relative paths (`./poke_env/data/static/...`). The symlink shadows the site-packages poke_env, which causes a circular import if you `from pokechamp.prompts import ...` directly. **Always `import poke_env` first** to break the cycle (the translator does this automatically).
-
-## SLURM Quick Reference
-
-| QOS | Max Wall | Use |
-|-----|----------|-----|
-| `interactive` | 4h | `salloc` only (NOT sbatch) |
-| `debug` | 30m | Quick tests |
-| `regular` | 48h | Production training |
-
-Account: `-A m5017` (or `-A m5017_g` with reservation).
-Constraint: `-C "gpu&hbm80g"` for A100-80GB nodes.

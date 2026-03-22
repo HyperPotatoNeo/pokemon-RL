@@ -72,13 +72,12 @@ uv pip install -e ".[test]"           # our package
 ## Running Tests
 
 ```bash
-# On login node (unit tests only):
+# Unit tests (no Showdown needed):
 .venv/bin/python -m pytest -m unit -v
 
-# On compute node via SSH:
-bash scripts/run_tests_remote.sh nid008268 -m unit -v
-bash scripts/run_tests_remote.sh nid008268 -m integration -v
-bash scripts/run_tests_remote.sh nid008268 -v  # all tests
+# All tests (Showdown must be running):
+bash scripts/run_tests.sh -v
+bash scripts/run_tests.sh -m integration -v
 ```
 
 ## Documentation

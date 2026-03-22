@@ -1,7 +1,12 @@
-# Scripts (cluster-specific, each user creates their own)
+# Scripts — generic versions tracked, cluster-specific gitignored
 scripts/*
 !scripts/README.md
-!scripts/CLUSTER.md
+!scripts/setup_node.sh
+!scripts/setup_node_hostnet.sh
+!scripts/run_tests.sh
+
+# Local cluster scripts (user-specific, never pushed)
+local_scripts/
 
 # Symlink for pokechamp data_cache relative paths (./poke_env/data/static/...)
 poke_env

@@ -8,17 +8,10 @@ These tests require:
 Tests verify that real LLM-generated text works through the full pipeline:
 prompts → LLM → text response → parse action → battle advance → rewards.
 
-RESERVATION: _CAP_tinker nodes (nid008205, nid008268, nid008297, nid008304,
-nid008448, nid008480), 6 GPU nodes, hbm80g, until 2026-03-29.
-
-CONFIGURATION NOTE: Tests use configurable host/port/model via environment
-variables. The implementation agent should set these when running:
+Configuration via environment variables:
     VLLM_HOST=localhost VLLM_PORT=8001 MODEL_NAME=Qwen/Qwen3-4B-Instruct-2507
     SHOWDOWN_PORT=8000
-
-TEST PHILOSOPHY — NO FALL-THROUGH PASSES:
-GPU tests are expensive. Every test must verify specific behavior (parse
-success rate, trajectory integrity, reward correctness), not just "it ran."
+    REMOTE_NODE=<hostname>  (for multinode tests)
 """
 
 import asyncio
@@ -290,7 +283,7 @@ class TestGPUMultiNode:
     async def test_cross_node_battle(self):
         """Battle with Showdown on one node, player connecting from another.
 
-        To run: REMOTE_NODE=nid008268 pytest -m multinode
+        To run: REMOTE_NODE=<hostname> pytest -m multinode
         """
         remote_node = os.environ.get("REMOTE_NODE")
         if not remote_node:

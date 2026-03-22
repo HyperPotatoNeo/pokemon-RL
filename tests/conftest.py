@@ -60,17 +60,17 @@ requires_showdown = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def showdown_path():
-    return os.environ.get(
-        "SHOWDOWN_PATH", "/pscratch/sd/s/siddart2/pokechamp/pokemon-showdown"
+    # Default: vendor/pokechamp/pokemon-showdown inside the repo
+    default = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "vendor", "pokechamp", "pokemon-showdown",
     )
+    return os.environ.get("SHOWDOWN_PATH", default)
 
 
 @pytest.fixture
 def node_path():
-    return os.environ.get(
-        "NODE_PATH",
-        "/pscratch/sd/s/siddart2/node-v20.18.1-linux-x64/bin/node",
-    )
+    return os.environ.get("NODE_PATH", "node")
 
 
 @pytest.fixture

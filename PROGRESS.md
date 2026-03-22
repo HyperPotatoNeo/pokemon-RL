@@ -21,7 +21,7 @@
   `vendor/pokechamp/poke_env/ps_client/ps_client.py:376` → `ws://`.
   Cross-node battles now work natively with `BattleManager(server_host="nidXXXXXX")`.
 
-### Test results (2-node: nid008480 → nid008448)
+### Test results (2-node cross-node verified)
 - Unit: 217 passed
 - Integration: 43 passed (real Showdown battles)
 - GPU: 6 passed (Qwen3-4B via vLLM + cross-node multinode)

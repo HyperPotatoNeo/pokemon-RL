@@ -55,8 +55,8 @@ class TestBattleManagerStateMachine:
         """Custom server host for cross-node play."""
         from pokemon_rl.battle import BattleManager
 
-        mgr = BattleManager(port=8000, server_host="nid008268")
-        assert mgr.server_host == "nid008268"
+        mgr = BattleManager(port=8000, server_host="remote-host")
+        assert mgr.server_host == "remote-host"
 
     @pytest.mark.unit
     @pytest.mark.asyncio
