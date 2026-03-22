@@ -133,10 +133,11 @@ Train LLMs to play Pokemon via GRPO with prime-rl integration.
 # Generic launch (inside prime-rl environment):
 bash scripts/launch_rl.sh configs/pokemon/rl_selfplay.toml
 
-# Or manually:
+# Or manually (from prime-rl directory):
 cd /path/to/prime-rl && source .venv/bin/activate
 pip install -e /path/to/pokemon-rl/vendor/pokechamp
 pip install -e /path/to/pokemon-rl
+ln -sfn /path/to/pokemon-rl/vendor/pokechamp/poke_env poke_env  # required: pokechamp data cache
 rl @ /path/to/pokemon-rl/configs/pokemon/rl_selfplay.toml
 ```
 
