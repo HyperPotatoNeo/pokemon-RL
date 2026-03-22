@@ -16,14 +16,16 @@
   cleanup exception suppression test, FailStartManager.close_called assert,
   GPU parse success assertion
 - **2 deferred**: queue hang on POKE_LOOP death (rare), Zoroark illusion crash (vendor)
-- **Cross-node finding**: poke-env _battle_against hangs when both players in same
-  process connect to remote Showdown. Requires separate processes per node.
+- **Cross-node fix**: poke-env's `websocket_url_online` used `wss://` (SSL) for
+  non-localhost servers, hanging on TLS handshake. Fixed in pokechamp fork:
+  `vendor/pokechamp/poke_env/ps_client/ps_client.py:376` → `ws://`.
+  Cross-node battles now work natively with `BattleManager(server_host="nidXXXXXX")`.
 
-### Test results
+### Test results (2-node: nid008480 → nid008448)
 - Unit: 217 passed
 - Integration: 43 passed (real Showdown battles)
-- GPU: 4 passed (Qwen3-4B via vLLM), 2 multinode skipped (requires separate processes)
-- Total: **264 passed**
+- GPU: 6 passed (Qwen3-4B via vLLM + cross-node multinode)
+- Total: **266 passed, 0 skipped, 0 failed**
 
 ## 2026-03-21: Phase 4 Verifiers Integration — IMPLEMENTED
 

@@ -104,6 +104,6 @@ Key details:
 - `system_prompt=None` (default) preserves the translator's system prompt (e.g. pokechamp's rich prompt)
 - `step_reward_fn` output is folded into `step["reward"]` by `_assign_rewards` (extras dropped at IPC)
 - Move/switch name normalization strips all non-alphanumeric chars (matches poke-env's `to_id_str`)
-- Cross-node: requires `--net=host` containers + separate player processes per node
+- Cross-node: requires `--net=host` containers (pokechamp fork patched ws:// for non-localhost)
 
 See `PROGRESS.md` for latest updates and `TODO.md` for roadmap.

@@ -133,7 +133,7 @@ For cross-node play (e.g., 2 GPU nodes running different models):
    BattleManager(server_host="nid008268", port=8000)
    ```
 
-3. **Separate processes per node.** poke-env's `_battle_against` runs both players in the same process. Cross-node, this hangs because the challenge/accept matchmaking flow times out when both WebSocket connections go over the network from the same event loop. For real cross-node play, run one player process per node, each connecting to the shared Showdown server independently.
+3. **ws:// fix in pokechamp fork.** poke-env's `listen()` uses `wss://` (SSL) for any non-localhost server. Self-hosted Showdown doesn't have SSL, causing the WebSocket to hang on TLS handshake. The pokechamp fork at `vendor/pokechamp/poke_env/ps_client/ps_client.py:376` has been patched to use `ws://` for the online path. This makes cross-node battles work natively with `BattleManager(server_host="nid008268")`.
 
 ### GPU Tests (vLLM)
 

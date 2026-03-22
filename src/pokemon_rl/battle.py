@@ -101,6 +101,7 @@ class BattleManager:
             )
         return self._server_config
 
+
     # ------------------------------------------------------------------
     # Cross-event-loop bridge
     # ------------------------------------------------------------------
@@ -164,6 +165,7 @@ class BattleManager:
             team=player_team,
         )
 
+
         self._opponent = create_opponent(
             opponent_type=opponent_type,
             battle_format=self.battle_format,
@@ -171,6 +173,7 @@ class BattleManager:
             team=opponent_team,
             **opponent_kwargs,
         )
+
 
         self._battle_future = asyncio.run_coroutine_threadsafe(
             self._player._battle_against(self._opponent, 1),
@@ -249,11 +252,13 @@ class BattleManager:
             server_config=server_config,
             team=player1_team,
         )
+
         self._opponent_player2 = ControllablePlayer.create(
             battle_format=self.battle_format,
             server_config=server_config,
             team=player2_team,
         )
+
 
         # Thread-safe relay queue: POKE_LOOP tasks write, caller reads
         self._selfplay_relay = thread_queue.Queue()
