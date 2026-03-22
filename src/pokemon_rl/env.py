@@ -32,6 +32,7 @@ Usage (standalone testing):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random as _random
@@ -211,7 +212,7 @@ class PokemonBattleEnv(_EnvBase):
         "battle_format", "port", "server_host", "play_mode", "opponent_type",
         "observation_format", "system_prompt", "reward_win", "reward_loss",
         "reward_draw", "step_reward_fn", "max_game_turns", "num_battles",
-        "team_dir", "team_fn", "score_rollouts",
+        "team_dir", "team_fn", "score_rollouts", "max_concurrent_battles",
     })
 
     def __init__(
@@ -229,6 +230,7 @@ class PokemonBattleEnv(_EnvBase):
         step_reward_fn: Callable | None = None,
         max_game_turns: int = 200,
         num_battles: int = 1000,
+        max_concurrent_battles: int = 8,
         team_dir: str | None = None,
         team_fn: Callable[[], str] | None = None,
         **kwargs,
@@ -266,6 +268,7 @@ class PokemonBattleEnv(_EnvBase):
         self.reward_draw = reward_draw
         self.step_reward_fn = step_reward_fn
         self.max_game_turns = max_game_turns
+        self.max_concurrent_battles = max_concurrent_battles
         # None = preserve translator's system prompt (e.g. pokechamp's rich prompt)
         # Explicit string = override with custom prompt
         self._system_prompt = system_prompt
@@ -337,6 +340,12 @@ class PokemonBattleEnv(_EnvBase):
                 await old_manager.close()
             except Exception:
                 pass
+
+        # Acquire a battle slot (blocks if at max concurrent battles)
+        from pokemon_rl.coordinator import BattleCoordinator
+        coordinator = BattleCoordinator.get(self.max_concurrent_battles)
+        await coordinator._semaphore.acquire()
+        state["_has_coordinator_slot"] = True
 
         state["game_over"] = False
         state["game_turn"] = 0
@@ -452,6 +461,11 @@ class PokemonBattleEnv(_EnvBase):
             except Exception:
                 pass  # Cleanup must not propagate exceptions
             state["manager"] = None
+        # Release coordinator slot so another battle can start
+        if state.pop("_has_coordinator_slot", False):
+            from pokemon_rl.coordinator import BattleCoordinator
+            coordinator = BattleCoordinator.get(self.max_concurrent_battles)
+            coordinator._semaphore.release()
 
     # ------------------------------------------------------------------
     # Hook: env_response (required abstract, unused by our override)

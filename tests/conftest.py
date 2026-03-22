@@ -58,6 +58,17 @@ requires_showdown = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _reset_coordinator():
+    """Reset BattleCoordinator singleton between tests to prevent semaphore leaks."""
+    yield
+    try:
+        from pokemon_rl.coordinator import BattleCoordinator
+        BattleCoordinator.reset()
+    except ImportError:
+        pass
+
+
 @pytest.fixture
 def showdown_path():
     # Default: vendor/pokechamp/pokemon-showdown inside the repo

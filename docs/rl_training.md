@@ -133,6 +133,7 @@ num_battles = 10000         # Total battles before env stops
 # Optional:
 # opponent_type = "max_damage"  # For play_mode = "single"
 # team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
+# max_concurrent_battles = 8    # Throttle concurrent games per worker (default: 8)
 
 [inference]
 # Must be present — prime-rl starts vLLM automatically
@@ -167,7 +168,7 @@ interval = 10               # Checkpoint every N steps
 | Arg | Type | Default | Description |
 |-----|------|---------|-------------|
 | `battle_format` | str | required | Showdown format (gen9ou, gen9randombattle, etc.) |
-| `play_mode` | str | `"self_play"` | `"self_play"` (both train) or `"single"` (one trains) |
+| `play_mode` | str | `"single"` | `"self_play"` (both train) or `"single"` (one trains) |
 | `port` | int | `8000` | Showdown server port |
 | `server_host` | str | `"localhost"` | Showdown server hostname (for multi-node) |
 | `observation_format` | str | `"pokechamp_io"` | Prompt format: `"pokechamp_io"` or `"simple"` |
@@ -178,6 +179,7 @@ interval = 10               # Checkpoint every N steps
 | `max_game_turns` | int | `200` | Max turns before truncation |
 | `num_battles` | int | `1000` | Total battles before env exhausts |
 | `team_dir` | str | None | Path to team .txt files (relative to pokemon-rl root) |
+| `max_concurrent_battles` | int | `8` | Max battles running concurrently per worker process |
 | `score_rollouts` | bool | `True` | Whether prime-rl scores rollouts (keep True) |
 
 ### Opponent Types
@@ -245,14 +247,44 @@ ln -sfn /path/to/pokemon-rl/vendor/pokechamp/poke_env poke_env
 rl @ /path/to/pokemon-rl/configs/pokemon/rl_selfplay.toml
 ```
 
-### GPU Assignment
+### GPU Distribution
+
+prime-rl distributes across GPUs:
+
+- **Inference (vLLM)**: Serves model completions. Supports tensor-parallel (TP, splits one model across GPUs) and data-parallel (DP, runs independent replicas). DP doubles throughput for the same model size.
+- **Trainer**: Runs GRPO weight updates. Uses FSDP2 for model sharding if multiple GPUs.
+- **External opponents** (Kakuna): Run on remaining GPUs. Tiny models (~1.6 GB each).
+
+**Single-node layouts (4× A100-80GB):**
+
+```
+Self-play / heuristic:
+  GPU 0-2: vLLM inference (TP=3 or DP=3)
+  GPU 3:   Trainer
+
+Vs Kakuna:
+  GPU 0-1: vLLM inference (DP=2)
+  GPU 2:   Trainer
+  GPU 3:   Kakuna instances (batch_size instances, ~1.6 GB each)
+```
 
 ```bash
 # Explicit GPU assignment:
-rl @ config.toml --inference_gpu_ids 0 1 2 --trainer_gpu_ids 3
+rl @ config.toml --inference_gpu_ids 0,1 --trainer_gpu_ids 2
 
 # Or via launch_rl.sh env vars:
-INFERENCE_GPUS="0 1 2" TRAINER_GPUS="3" bash scripts/launch_rl.sh
+INFERENCE_GPUS="0,1" TRAINER_GPUS="2" bash scripts/launch_rl.sh
+```
+
+### Concurrency Throttle
+
+`max_concurrent_battles` (default: 8) limits how many games run simultaneously within a single worker process. With `batch_size=16` and `max_concurrent_battles=8`, 8 games run at once and the remaining 8 are queued. This controls memory and CPU pressure from Showdown connections.
+
+For external opponents like Kakuna, set `max_concurrent_battles` to match the number of Kakuna instances (which defaults to `batch_size`).
+
+```toml
+[orchestrator.env.args]
+max_concurrent_battles = 8   # At most 8 games running at once
 ```
 
 ### Cluster Launch
