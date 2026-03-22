@@ -35,7 +35,7 @@ port = 8000
 observation_format = "pokechamp_io"
 reward_win = 1.0
 reward_loss = 0.0
-reward_draw = 0.0
+reward_draw = 0.0           # Deliberate: draws = losses. Do not change without discussion.
 max_game_turns = 100
 num_battles = 10000
 team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"

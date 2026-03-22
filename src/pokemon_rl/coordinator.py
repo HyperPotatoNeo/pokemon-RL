@@ -1,29 +1,20 @@
 """BattleCoordinator — manages concurrent battle throttling.
 
 Sits between the orchestrator and PokemonBattleEnv to control how many
-battles run simultaneously within a worker process. This is the right
-layer for concurrency control — the env handles game logic, the
-coordinator handles scheduling.
+battles run simultaneously within a worker process. The env handles game
+logic; the coordinator handles scheduling.
 
 Usage in TOML config:
     [orchestrator.env.args]
     max_concurrent_battles = 8   # default
 
-The env passes this to the coordinator. The coordinator provides
-acquire/release context management around battle lifecycle.
-
-Usage in code:
-    coordinator = BattleCoordinator.get(max_concurrent=8)
-    async with coordinator.battle_slot():
-        # Start and play a battle
-        ...
+The env calls acquire() in setup_state and release() in cleanup_battle.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +47,13 @@ class BattleCoordinator:
         global _instance
         if _instance is None:
             _instance = cls(max_concurrent=max_concurrent)
+        elif _instance.max_concurrent != max_concurrent:
+            logger.warning(
+                "BattleCoordinator already initialized with max_concurrent=%d, "
+                "ignoring requested max_concurrent=%d",
+                _instance.max_concurrent,
+                max_concurrent,
+            )
         return _instance
 
     @classmethod
@@ -64,27 +62,16 @@ class BattleCoordinator:
         global _instance
         _instance = None
 
-    @asynccontextmanager
-    async def battle_slot(self):
-        """Context manager that acquires a battle slot.
-
-        Blocks until a slot is available (if at max_concurrent).
-        Releases the slot on exit (including on exception).
-
-        Usage:
-            async with coordinator.battle_slot():
-                battle = await manager.start_battle(...)
-                # ... play game ...
-                await manager.close()
-        """
+    async def acquire(self) -> None:
+        """Acquire a battle slot. Blocks if at max_concurrent."""
         await self._semaphore.acquire()
         self._active += 1
         self._total += 1
-        try:
-            yield
-        finally:
-            self._active -= 1
-            self._semaphore.release()
+
+    def release(self) -> None:
+        """Release a battle slot."""
+        self._active -= 1
+        self._semaphore.release()
 
     @property
     def active_battles(self) -> int:

@@ -341,10 +341,15 @@ class PokemonBattleEnv(_EnvBase):
             except Exception:
                 pass
 
+        # Release any previously-held coordinator slot (retry scenario)
+        if state.pop("_has_coordinator_slot", False):
+            from pokemon_rl.coordinator import BattleCoordinator
+            BattleCoordinator.get(self.max_concurrent_battles).release()
+
         # Acquire a battle slot (blocks if at max concurrent battles)
         from pokemon_rl.coordinator import BattleCoordinator
         coordinator = BattleCoordinator.get(self.max_concurrent_battles)
-        await coordinator._semaphore.acquire()
+        await coordinator.acquire()
         state["_has_coordinator_slot"] = True
 
         state["game_over"] = False
@@ -464,8 +469,7 @@ class PokemonBattleEnv(_EnvBase):
         # Release coordinator slot so another battle can start
         if state.pop("_has_coordinator_slot", False):
             from pokemon_rl.coordinator import BattleCoordinator
-            coordinator = BattleCoordinator.get(self.max_concurrent_battles)
-            coordinator._semaphore.release()
+            BattleCoordinator.get(self.max_concurrent_battles).release()
 
     # ------------------------------------------------------------------
     # Hook: env_response (required abstract, unused by our override)
