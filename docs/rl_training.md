@@ -193,9 +193,11 @@ The opponent registry (`src/pokemon_rl/opponents.py`) routes each opponent type 
 
 **Direct opponents** run in-process as poke-env Players. No setup needed — just set `opponent_type` in the config.
 
-**External opponents** run as separate processes connecting to the same Showdown server. The system serializes ladder matching within each worker process so that concurrent rollouts don't match each other. `launch_rl.sh` auto-starts Kakuna if `opponent_type = "kakuna"` and the launcher script exists at `local_scripts/launch_kakuna_opponent.sh`.
+**External opponents** run as separate processes connecting to the same Showdown server. `launch_rl.sh` auto-starts one Kakuna instance per game in the batch (matching `batch_size`) for full parallelism. Each instance plays one game at a time; with N instances, N games run concurrently.
 
-**Important**: For external opponents, prime-rl must use a single env worker process (`workers_per_env = 1`, the default). The serialized matching only works within one process. Multiple worker processes would each get their own semaphore and could match against each other.
+The system serializes ladder matching within each worker process so that concurrent rollouts don't match each other — they match successive Kakuna instances instead. Kakuna is small (~1.6 GB per instance, 142M params) and runs on the GPUs not used by vLLM/trainer (typically GPUs 2-3).
+
+**Important**: For external opponents, prime-rl must use a single env worker process (`workers_per_env = 1`, the default). The serialized matching only works within one process.
 
 To add a new external opponent, add an entry to the `_REGISTRY` in `opponents.py`.
 

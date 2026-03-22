@@ -93,33 +93,38 @@ fi
 
 # --- 5. Detect and start external opponents (e.g., kakuna) ---
 OPPONENT_PID=""
-OPPONENT_TYPE=$(python -c "
-import tomllib, sys
+CONFIG_INFO=$(python -c "
+import tomllib
 with open('$CONFIG', 'rb') as f:
     cfg = tomllib.load(f)
+orch = cfg.get('orchestrator', {})
+batch_size = orch.get('batch_size', 4)
 env_args = {}
-for env in cfg.get('orchestrator', {}).get('env', []):
+for env in orch.get('env', []):
     env_args = env.get('args', {})
-print(env_args.get('opponent_type', ''))
+print(f\"{env_args.get('opponent_type', '')} {batch_size}\")
 " 2>/dev/null)
+OPPONENT_TYPE=$(echo "$CONFIG_INFO" | awk '{print $1}')
+BATCH_SIZE=$(echo "$CONFIG_INFO" | awk '{print $2}')
 
 if [ "$OPPONENT_TYPE" = "kakuna" ]; then
     KAKUNA_SCRIPT="${KAKUNA_LAUNCHER:-$POKEMON_RL_DIR/local_scripts/launch_kakuna_opponent.sh}"
+    NUM_KAKUNA=${NUM_KAKUNA:-$BATCH_SIZE}
     if [ -f "$KAKUNA_SCRIPT" ]; then
-        echo "Starting Kakuna opponent process..."
-        bash "$KAKUNA_SCRIPT" &
+        echo "Starting $NUM_KAKUNA Kakuna instances (matching batch_size)..."
+        bash "$KAKUNA_SCRIPT" "$NUM_KAKUNA" &
         OPPONENT_PID=$!
         trap "kill $OPPONENT_PID 2>/dev/null; kill $SHOWDOWN_PID 2>/dev/null" EXIT
-        echo "Waiting 30s for Kakuna to initialize..."
-        sleep 30
+        echo "Waiting 45s for Kakuna instances to initialize..."
+        sleep 45
         if ! kill -0 "$OPPONENT_PID" 2>/dev/null; then
-            echo "ERROR: Kakuna process died during startup" >&2
+            echo "ERROR: Kakuna launcher died during startup" >&2
             exit 1
         fi
-        echo "Kakuna running (PID: $OPPONENT_PID)"
+        echo "Kakuna running ($NUM_KAKUNA instances, launcher PID: $OPPONENT_PID)"
     else
         echo "WARNING: Kakuna launcher not found at $KAKUNA_SCRIPT"
-        echo "Start the Kakuna process manually before training begins."
+        echo "Start Kakuna processes manually before training begins."
     fi
 fi
 
