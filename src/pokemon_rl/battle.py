@@ -47,6 +47,19 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Serialized ladder matching: prevents multiple env workers from matching
+# each other on the Showdown ladder instead of the intended external opponent.
+# Only one worker searches at a time; released once the match is confirmed.
+_ladder_match_semaphore: asyncio.Semaphore | None = None
+
+
+def _get_ladder_semaphore() -> asyncio.Semaphore:
+    """Get or create the module-level ladder matching semaphore."""
+    global _ladder_match_semaphore
+    if _ladder_match_semaphore is None:
+        _ladder_match_semaphore = asyncio.Semaphore(1)
+    return _ladder_match_semaphore
+
 
 class BattleManager:
     """Manages a single battle with turn-by-turn control.
@@ -188,18 +201,28 @@ class BattleManager:
         return state
 
     # ------------------------------------------------------------------
-    # Ladder mode (for Kakuna / external opponents via Showdown matchmaking)
+    # Ladder mode (for external opponents via Showdown matchmaking)
     # ------------------------------------------------------------------
 
     async def start_battle_ladder(
         self,
         player_team: str | None = None,
+        serialize_matching: bool = False,
     ) -> Any:
         """Start a battle via Showdown's ladder matchmaking.
 
         The player searches the ladder; Showdown matches against whoever
         else is searching (e.g., a Kakuna process). No opponent Player is
         created — the opponent is an external process.
+
+        Args:
+            player_team: Optional team string for the player.
+            serialize_matching: If True, acquire a module-level semaphore
+                before searching the ladder. This prevents multiple env
+                workers from matching each other instead of the intended
+                external opponent. The semaphore is released once a match
+                is confirmed (battle state received), so games still run
+                concurrently.
 
         Returns the first Battle state, or None if battle failed to start.
         """
@@ -217,17 +240,40 @@ class BattleManager:
             team=player_team,
         )
 
-        # _ladder(1) is the internal coroutine — NOT ladder() which wraps
-        # with handle_threaded_coroutines (would deadlock on POKE_LOOP).
-        # Same pattern as start_battle using _battle_against.
-        self._battle_future = asyncio.run_coroutine_threadsafe(
-            self._player._ladder(1),
-            POKE_LOOP,
-        )
-        self._started = True
-        self._selfplay = False
+        if serialize_matching:
+            sem = _get_ladder_semaphore()
+            await sem.acquire()
 
-        state = await self._poke_loop_get(self._player.state_queue)
+        try:
+            # _ladder(1) is the internal coroutine — NOT ladder() which wraps
+            # with handle_threaded_coroutines (would deadlock on POKE_LOOP).
+            # Same pattern as start_battle using _battle_against.
+            self._battle_future = asyncio.run_coroutine_threadsafe(
+                self._player._ladder(1),
+                POKE_LOOP,
+            )
+            self._started = True
+            self._selfplay = False
+
+            # Timeout prevents indefinite hang if external opponent is down.
+            # The semaphore is held during matching, so a long timeout blocks
+            # other workers — keep it reasonable.
+            try:
+                state = await asyncio.wait_for(
+                    self._poke_loop_get(self._player.state_queue),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Ladder match timed out after 120s. "
+                    "Is the external opponent process running?"
+                )
+                self._finished = True
+                state = None
+        finally:
+            if serialize_matching:
+                sem.release()
+
         if state is None:
             self._finished = True
         return state

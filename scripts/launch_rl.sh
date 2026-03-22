@@ -91,7 +91,39 @@ if [ ! -e "$PRIME_RL_DIR/poke_env" ]; then
     echo "Created poke_env symlink in prime-rl"
 fi
 
-# --- 5. Run training ---
+# --- 5. Detect and start external opponents (e.g., kakuna) ---
+OPPONENT_PID=""
+OPPONENT_TYPE=$(python -c "
+import tomllib, sys
+with open('$CONFIG', 'rb') as f:
+    cfg = tomllib.load(f)
+env_args = {}
+for env in cfg.get('orchestrator', {}).get('env', []):
+    env_args = env.get('args', {})
+print(env_args.get('opponent_type', ''))
+" 2>/dev/null)
+
+if [ "$OPPONENT_TYPE" = "kakuna" ]; then
+    KAKUNA_SCRIPT="${KAKUNA_LAUNCHER:-$POKEMON_RL_DIR/local_scripts/launch_kakuna_opponent.sh}"
+    if [ -f "$KAKUNA_SCRIPT" ]; then
+        echo "Starting Kakuna opponent process..."
+        bash "$KAKUNA_SCRIPT" &
+        OPPONENT_PID=$!
+        trap "kill $OPPONENT_PID 2>/dev/null; kill $SHOWDOWN_PID 2>/dev/null" EXIT
+        echo "Waiting 30s for Kakuna to initialize..."
+        sleep 30
+        if ! kill -0 "$OPPONENT_PID" 2>/dev/null; then
+            echo "ERROR: Kakuna process died during startup" >&2
+            exit 1
+        fi
+        echo "Kakuna running (PID: $OPPONENT_PID)"
+    else
+        echo "WARNING: Kakuna launcher not found at $KAKUNA_SCRIPT"
+        echo "Start the Kakuna process manually before training begins."
+    fi
+fi
+
+# --- 6. Run training ---
 echo "Starting RL training..."
 GPU_ARGS=""
 [ -n "$INFERENCE_GPUS" ] && GPU_ARGS="$GPU_ARGS --inference_gpu_ids $INFERENCE_GPUS"

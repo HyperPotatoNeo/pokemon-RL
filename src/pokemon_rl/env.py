@@ -233,6 +233,16 @@ class PokemonBattleEnv(_EnvBase):
         team_fn: Callable[[], str] | None = None,
         **kwargs,
     ):
+        # Backward compat: opponent_type="ladder" -> "kakuna"
+        if opponent_type == "ladder":
+            warnings.warn(
+                'opponent_type="ladder" is deprecated. '
+                'Use the specific opponent name (e.g., "kakuna") instead.',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            opponent_type = "kakuna"
+
         if play_mode not in ("single", "self_play"):
             raise ValueError(f"Unknown play_mode: {play_mode}")
 
@@ -366,25 +376,37 @@ class PokemonBattleEnv(_EnvBase):
                     agents[pending[0][0]].battle = pending[0][1]
                     if len(pending) > 1:
                         agents[pending[1][0]].battle = pending[1][1]
-            elif self.opponent_type == "ladder":
-                # Ladder mode: match via Showdown matchmaking (e.g. vs Kakuna)
-                player_team = self.team_fn() if self.team_fn else None
-                battle = await manager.start_battle_ladder(
-                    player_team=player_team,
-                )
-                state["_agents"] = [_AgentContext(0)]
-                state["_agents"][0].battle = battle
-                state["_current_agent_idx"] = 0
-                if battle is None:
-                    state["game_over"] = True
             else:
+                # Single-agent mode — route via opponent registry
+                from pokemon_rl.opponents import get_opponent_spec
+                spec = get_opponent_spec(self.opponent_type)
                 player_team = self.team_fn() if self.team_fn else None
-                opponent_team = self.team_fn() if self.team_fn else None
-                battle = await manager.start_battle(
-                    opponent_type=self.opponent_type,
-                    player_team=player_team,
-                    opponent_team=opponent_team,
-                )
+
+                if spec.kind == "direct":
+                    # In-process heuristic opponent
+                    opponent_team = (
+                        self.team_fn() if self.team_fn else None
+                    )
+                    battle = await manager.start_battle(
+                        opponent_type=spec.opponent_type,
+                        player_team=player_team,
+                        opponent_team=opponent_team,
+                    )
+                elif spec.kind == "external":
+                    # External process — serialized ladder to prevent
+                    # env workers from matching each other.
+                    # NOTE: serialization only works within a single process.
+                    # Use workers_per_env=1 for external opponents.
+                    battle = await manager.start_battle_ladder(
+                        player_team=player_team,
+                        serialize_matching=True,
+                    )
+                else:
+                    raise ValueError(
+                        f"Unknown opponent kind: '{spec.kind}' "
+                        f"for opponent_type='{self.opponent_type}'"
+                    )
+
                 state["_agents"] = [_AgentContext(0)]
                 state["_agents"][0].battle = battle
                 state["_current_agent_idx"] = 0
@@ -833,14 +855,28 @@ class PokemonBattleEnv(_EnvBase):
                     manager, action_fn, trajectory
                 )
 
-            # Single-agent mode
+            # Single-agent mode — route via opponent registry
+            from pokemon_rl.opponents import get_opponent_spec
+            spec = get_opponent_spec(self.opponent_type)
             player_team = self.team_fn() if self.team_fn else None
-            opponent_team = self.team_fn() if self.team_fn else None
-            battle = await manager.start_battle(
-                opponent_type=self.opponent_type,
-                player_team=player_team,
-                opponent_team=opponent_team,
-            )
+
+            if spec.kind == "direct":
+                opponent_team = self.team_fn() if self.team_fn else None
+                battle = await manager.start_battle(
+                    opponent_type=spec.opponent_type,
+                    player_team=player_team,
+                    opponent_team=opponent_team,
+                )
+            elif spec.kind == "external":
+                battle = await manager.start_battle_ladder(
+                    player_team=player_team,
+                    serialize_matching=True,
+                )
+            else:
+                raise ValueError(
+                    f"Unknown opponent kind: '{spec.kind}' "
+                    f"for opponent_type='{self.opponent_type}'"
+                )
             turn_count = 0
 
             while battle is not None and turn_count < self.max_game_turns:

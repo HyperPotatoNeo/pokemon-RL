@@ -29,7 +29,7 @@ name = "pokemon-vs-heuristic"
 [orchestrator.env.args]
 battle_format = "gen9ou"
 play_mode = "single"
-opponent_type = "max_damage"   # or "abyssal" or "random"
+opponent_type = "max_damage"   # Options: "random", "max_damage", "abyssal", "kakuna" (needs external process)
 port = 8000
 observation_format = "pokechamp_io"
 reward_win = 1.0

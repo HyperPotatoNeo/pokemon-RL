@@ -171,7 +171,7 @@ interval = 10               # Checkpoint every N steps
 | `port` | int | `8000` | Showdown server port |
 | `server_host` | str | `"localhost"` | Showdown server hostname (for multi-node) |
 | `observation_format` | str | `"pokechamp_io"` | Prompt format: `"pokechamp_io"` or `"simple"` |
-| `opponent_type` | str | `"random"` | For `play_mode="single"`: `"random"`, `"max_damage"`, `"abyssal"` |
+| `opponent_type` | str | `"random"` | Opponent to train against (see Opponent Types below) |
 | `reward_win` | float | `1.0` | Reward for winning |
 | `reward_loss` | float | `0.0` | Reward for losing |
 | `reward_draw` | float | `0.0` | Reward for draw (deliberate: same as loss) |
@@ -179,6 +179,25 @@ interval = 10               # Checkpoint every N steps
 | `num_battles` | int | `1000` | Total battles before env exhausts |
 | `team_dir` | str | None | Path to team .txt files (relative to pokemon-rl root) |
 | `score_rollouts` | bool | `True` | Whether prime-rl scores rollouts (keep True) |
+
+### Opponent Types
+
+The opponent registry (`src/pokemon_rl/opponents.py`) routes each opponent type automatically:
+
+| Type | Kind | Description |
+|------|------|-------------|
+| `random` | direct | Random legal action (in-process) |
+| `max_damage` | direct | Always picks highest base power move (in-process) |
+| `abyssal` | direct | Strong heuristic with type/switch logic (in-process) |
+| `kakuna` | external | Metamon's best RL agent, 7.8M self-play battles (separate process) |
+
+**Direct opponents** run in-process as poke-env Players. No setup needed — just set `opponent_type` in the config.
+
+**External opponents** run as separate processes connecting to the same Showdown server. The system serializes ladder matching within each worker process so that concurrent rollouts don't match each other. `launch_rl.sh` auto-starts Kakuna if `opponent_type = "kakuna"` and the launcher script exists at `local_scripts/launch_kakuna_opponent.sh`.
+
+**Important**: For external opponents, prime-rl must use a single env worker process (`workers_per_env = 1`, the default). The serialized matching only works within one process. Multiple worker processes would each get their own semaphore and could match against each other.
+
+To add a new external opponent, add an entry to the `_REGISTRY` in `opponents.py`.
 
 ### Reward System
 
