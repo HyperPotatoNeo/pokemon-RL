@@ -1,0 +1,61 @@
+# 600-step RL training: Qwen 4B vs abyssal heuristic opponent.
+# 4x4 split: Node 1 = inference (4 GPUs, DP=4), Node 2 = trainer (4 GPUs, FSDP4).
+# Total batch_size=128 per step.
+#
+# Launch: sbatch local_scripts/launch_2node_prod.sh configs/pokemon/rl_vs_abyssal_600_4x4.toml
+# NOTE: __INFERENCE_NODE__ is replaced at launch time with the actual hostname.
+max_steps = 600
+seq_len = 4096
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "pokemon-rl"
+name = "vs-abyssal-gen9ou-600-4x4"
+
+[orchestrator]
+batch_size = 128
+rollouts_per_example = 128    # = batch_size: batch-level GRPO normalization
+trajectory_strategy = "branching"
+
+[orchestrator.client]
+# All inference on Node 1 (DP=4). No local inference on Node 2.
+# __INFERENCE_NODE__ replaced at launch time.
+base_url = "http://__INFERENCE_NODE__:8001/v1"
+
+[orchestrator.sampling]
+max_tokens = 800
+temperature = 1.0
+
+[[orchestrator.env]]
+id = "pokemon_rl"
+name = "pokemon-vs-abyssal-600"
+
+[orchestrator.env.args]
+battle_format = "gen9ou"
+play_mode = "single"
+opponent_type = "abyssal"
+port = 8000
+observation_format = "pokechamp_io"
+reward_win = 1.0
+reward_loss = 0.0
+reward_draw = 0.0           # Deliberate: draws = losses. Do not change without discussion.
+max_game_turns = 200
+num_battles = 10000
+team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
+max_concurrent_battles = 128
+
+[trainer.optim]
+lr = 3e-6
+betas1 = 0.9
+betas2 = 0.9
+
+[trainer.model.ac]
+freq = 1   # Gradient checkpointing — prevents OOM
+
+[ckpt]
+interval = 25
+
+# No [inference] section — all inference on Node 1.
+# Node 2 uses all 4 GPUs for trainer (FSDP4).
