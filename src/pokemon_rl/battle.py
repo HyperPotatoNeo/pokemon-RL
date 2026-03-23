@@ -494,7 +494,9 @@ class BattleManager:
     async def close(self) -> None:
         """Clean up all resources.
 
-        Cancels the battle future, relay tasks, and clears player references.
+        Closes websocket connections, cancels POKE_LOOP tasks, and clears
+        player references. Without this, orphaned listen coroutines and
+        websockets accumulate on POKE_LOOP, starving the event loop.
         Safe to call multiple times.
         """
         # Cancel battle future
@@ -511,6 +513,25 @@ class BattleManager:
         # Unblock any reader waiting on the relay queue before nulling it
         if self._selfplay_relay is not None:
             self._selfplay_relay.put((None, None))
+
+        # Close websocket connections and cancel listen coroutines on POKE_LOOP.
+        # Each player has a _listening_coroutine that holds the websocket open.
+        # Timeout prevents indefinite hang if Showdown is slow to ack websocket close.
+        for player in (self._player, self._opponent, self._opponent_player2):
+            if player is not None:
+                try:
+                    from poke_env.concurrency import POKE_LOOP
+                    fut = asyncio.run_coroutine_threadsafe(
+                        player.ps_client._stop_listening(), POKE_LOOP
+                    )
+                    await asyncio.wait_for(asyncio.wrap_future(fut), timeout=5.0)
+                except (Exception, asyncio.TimeoutError):
+                    pass
+                # Break reference cycles in poke-env internals
+                try:
+                    player._battles.clear()
+                except Exception:
+                    pass
 
         self._player = None
         self._opponent = None

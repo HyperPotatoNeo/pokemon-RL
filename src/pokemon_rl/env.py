@@ -470,7 +470,7 @@ class PokemonBattleEnv(_EnvBase):
 
     @_vf_cleanup
     async def cleanup_battle(self, state: dict) -> None:
-        """Clean up BattleManager on any exit path. Must not raise."""
+        """Clean up BattleManager and break reference cycles. Must not raise."""
         manager = state.get("manager")
         if manager is not None:
             try:
@@ -482,6 +482,16 @@ class PokemonBattleEnv(_EnvBase):
         if state.pop("_has_coordinator_slot", False):
             from pokemon_rl.coordinator import BattleCoordinator
             BattleCoordinator.get(self.max_concurrent_battles).release()
+        # Break reference cycles to avoid GC stalls between steps.
+        # Battle objects have circular refs (Battle <-> Pokemon <-> Player).
+        # Without explicit cleanup, 128 battles accumulate ~62 GB and
+        # Python's cyclic GC takes 10+ minutes to collect them.
+        for agent in state.get("_agents", []):
+            agent.battle = None
+            agent.steps.clear()
+            agent.message_history.clear()
+        state.pop("_agents", None)
+        state.pop("_pending_states", None)
 
     # ------------------------------------------------------------------
     # Hook: env_response (required abstract, unused by our override)
@@ -496,16 +506,12 @@ class PokemonBattleEnv(_EnvBase):
     # ------------------------------------------------------------------
 
     async def get_prompt_messages(self, state: dict) -> list[dict] | None:
-        """Build prompt for current agent via _build_agent_prompt.
-
-        Offloads to a thread so CPU-bound state_translate (pokechamp damage
-        calcs) doesn't block the asyncio event loop and starve other battles.
-        """
+        """Build prompt for current agent via _build_agent_prompt."""
         agent = state["_agents"][state["_current_agent_idx"]]
         assert agent.battle is not None, (
             "get_prompt_messages called with no active battle"
         )
-        return await asyncio.to_thread(self._build_agent_prompt, agent, state)
+        return self._build_agent_prompt(agent, state)
 
     def _build_agent_prompt(
         self, agent: _AgentContext, state: dict
@@ -740,6 +746,13 @@ class PokemonBattleEnv(_EnvBase):
                 if s.get("extras", {}).get("parse_failed")
             ),
         }
+
+        # Drop ChatCompletion response objects from trajectory steps.
+        # These are large Pydantic objects (~3840 per step with branching)
+        # that are not needed after token extraction. Without this, they
+        # accumulate ~62 GB and cause multi-minute GC stalls between steps.
+        for step in trajectory:
+            step.pop("response", None)
 
     # ------------------------------------------------------------------
     # Reward computation — single source of truth
