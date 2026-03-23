@@ -56,7 +56,6 @@ freq = 1   # Gradient checkpointing — prevents OOM
 
 [ckpt]
 interval = 25
-resume_step = -1              # Auto-resume from latest checkpoint if crashed
 
 [inference]
 
