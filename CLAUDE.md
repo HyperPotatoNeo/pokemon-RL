@@ -96,9 +96,8 @@ bash scripts/run_tests.sh -m integration -v
 
 ## Current Status
 
-Phase 5 RL training integration complete. 298+ tests passing.
-Full pipeline validated: Qwen3-4B self-play GRPO on gen9randombattle, 3 training steps,
-balanced ~50/50 win/loss rewards.
+Phase 5 RL training integration complete + multi-node production training active.
+298+ tests passing. Production run: Qwen3-4B vs abyssal, batch_size=128, 600 steps, 2 nodes.
 
 Key details:
 - pokechamp_io prompts include CoT constraint: forces 3-sentence reasoning inside JSON
@@ -106,7 +105,20 @@ Key details:
 - `rollouts_per_example = batch_size` — batch-level GRPO normalization
 - `[inference.server] port = 8001` — must differ from Showdown port 8000
 - `[trainer.model.ac] freq = 1` — gradient checkpointing prevents OOM on single GPU
+- AdamW `betas1=0.9, betas2=0.9` — all production configs
 - Configs in `configs/pokemon/`, generic launch in `scripts/launch_rl.sh`
 - Cross-node: requires `--net=host` containers (pokechamp fork patched ws:// for non-localhost)
+
+Performance optimizations (cumulative):
+- `_copy_battle=False` in LocalSim: eliminates deepcopy, **11x speedup** (69 min/step to 6.4 min/step)
+- Mutation fix in `vendor/pokechamp/pokechamp/prompts.py`: local `max_hp` var instead of `pokemon._max_hp = 1`
+- `asyncio.to_thread` in `get_prompt_messages`: offloads CPU-bound prompt building to thread pool
+- Metrics: `wins`, `losses`, `draws` logged separately to W&B
+
+Multi-node (2-node):
+- Node 1: inference DP=4 (standalone, `configs/pokemon/inference_node1.toml`)
+- Node 2: inference DP=2 + trainer (2 GPUs) + Showdown + orchestrator
+- Launch: `sbatch local_scripts/launch_2node_prod.sh configs/pokemon/rl_vs_abyssal_600.toml`
+- Step time: ~6-7 min with batch_size=128
 
 See `docs/rl_training.md` for the full training guide.

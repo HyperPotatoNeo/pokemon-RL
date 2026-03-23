@@ -1,0 +1,16 @@
+# Standalone inference config for Node 1 (multi-node pokemon-rl setup).
+# Run with: CUDA_VISIBLE_DEVICES=0,1,2,3 uv run inference @ inference_node1.toml
+# DP=4 auto-set by rl.py from inference_gpu_ids, but explicit here for standalone use.
+
+seed = 0
+
+[server]
+host = "0.0.0.0"   # Bind to all interfaces so Node 2 can reach us
+port = 8001
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[parallel]
+dp = 4
+tp = 1

@@ -45,6 +45,8 @@ freq = 1
 
 [trainer.optim]
 lr = 3e-6
+betas1 = 0.9
+betas2 = 0.9
 
 [ckpt]
 interval = 10

@@ -279,6 +279,7 @@ class StateTranslator:
             gen_data,
             dynamax_disable,
             format=battle_format,
+            _copy_battle=False,
         )
         system_prompt, state_prompt, action_prompt = state_translate(sim, battle)
 

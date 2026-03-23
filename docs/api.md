@@ -311,7 +311,10 @@ Prevents `score_group` from overwriting env-computed rewards. Metrics are regist
 |--------|-----------|-------------|
 | `_passthrough_reward_sync(state)` | `(dict) -> float` | Synchronous passthrough. Returns `state["reward"]` or `0.0`. |
 | `passthrough_reward(state)` | `async (dict) -> float` | Async wrapper registered via `add_reward_func`. |
-| `won(state)` | `async (dict) -> int` | Metric: `int(state["won"])` or `-1` if None. |
+| `won(state)` | `async (dict) -> int` | Metric: `int(state["won"])` or `-1` if None. Legacy — use wins/losses/draws instead. |
+| `wins(state)` | `async (dict) -> int` | Metric: `1` if won, `0` otherwise. |
+| `losses(state)` | `async (dict) -> int` | Metric: `1` if lost, `0` otherwise. |
+| `draws(state)` | `async (dict) -> int` | Metric: `1` if draw/crash/truncation, `0` otherwise. |
 | `game_turns(state)` | `async (dict) -> int` | Metric: `state["game_turn"]`. |
 | `parse_failures(state)` | `async (dict) -> int` | Metric: count of `extras["parse_failed"]` across trajectory. |
 

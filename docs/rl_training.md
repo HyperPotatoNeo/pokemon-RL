@@ -89,6 +89,8 @@ RL training configs live in `configs/pokemon/`. Each is a prime-rl TOML config w
 | `rl_test.toml` | self_play | Integration testing — 3 steps, batch_size=4, gen9randombattle |
 | `rl_selfplay.toml` | self_play | Production self-play — 100 steps, batch_size=16, gen9ou |
 | `rl_vs_heuristic.toml` | single | Production vs heuristic bot — 100 steps, batch_size=16, gen9ou (default: max_damage, also: random, abyssal) |
+| `rl_vs_abyssal_600.toml` | single | 600-step production vs abyssal — batch_size=128, 2-node, gen9ou |
+| `inference_node1.toml` | — | Standalone inference for Node 1 (DP=4, host=0.0.0.0) |
 
 ### Config Sections
 
@@ -146,6 +148,8 @@ freq = 1                    # Gradient checkpointing (prevents OOM on 1 GPU)
 
 [trainer.optim]
 lr = 3e-6
+betas1 = 0.9                # AdamW beta1 (default for all pokemon configs)
+betas2 = 0.9                # AdamW beta2 (lower than default 0.999 — reduces momentum lag)
 
 [ckpt]
 interval = 10               # Checkpoint every N steps
@@ -291,12 +295,79 @@ max_concurrent_battles = 8   # At most 8 games running at once
 
 For HPC clusters (SLURM, containers), create cluster-specific scripts in `local_scripts/` (gitignored). See `local_scripts/README.md` for examples.
 
+## Multi-Node Training
+
+For large batch sizes (128+), distribute inference across two nodes:
+
+```
+2-node layout (4× A100-80GB per node):
+┌─────────────────────────────┐  ┌─────────────────────────────┐
+│ Node 1 (inference only)     │  │ Node 2 (rl + trainer)       │
+│   GPU 0-3: vLLM DP=4       │  │   GPU 0-1: vLLM DP=2        │
+│   Port 8001, host=0.0.0.0  │  │   GPU 2-3: Trainer (FSDP)   │
+│                             │  │   Showdown + Orchestrator    │
+└─────────────────────────────┘  └─────────────────────────────┘
+        Total inference: DP=6 (4+2) — 6× throughput
+```
+
+### Config Setup
+
+Multi-node configs use `__INFERENCE_NODE__` as a placeholder for Node 1's hostname. The launch script resolves it at runtime:
+
+```toml
+[orchestrator.client]
+# Two inference servers: Node 1 (DP=4) + local Node 2 (DP=2)
+base_url = ["http://__INFERENCE_NODE__:8001/v1", "http://localhost:8001/v1"]
+```
+
+A separate `inference_node1.toml` config runs the standalone inference server on Node 1 (DP=4, host=0.0.0.0 so Node 2 can reach it).
+
+### Launch
+
+```bash
+# Submit 2-node batch job with any config using __INFERENCE_NODE__:
+sbatch local_scripts/launch_2node_prod.sh configs/pokemon/rl_vs_abyssal_600.toml
+
+# Or the abyssal-specific launcher:
+sbatch local_scripts/launch_abyssal_2node.sh
+```
+
+### Requirements
+
+- Both containers must use `--net=host` (the pokechamp poke-env fork patches ws:// for non-localhost)
+- `setup_node_hostnet.sh` creates host-networking containers
+- Inference server must bind to `0.0.0.0` (not localhost) so the other node can connect
+
+## Performance Optimizations
+
+### `_copy_battle=False` (11x speedup)
+
+The `pokechamp_io` prompt builder calls `LocalSim(battle, ...)` for damage calculations. By default, `LocalSim.__init__` does `deepcopy(battle)`, which is extremely expensive for rich Battle objects. Passing `_copy_battle=False` (translator.py line 282) eliminates this copy.
+
+This was the single biggest performance bottleneck: **69 min/step down to 6.4 min/step** with batch_size=128.
+
+**Safety**: Requires the mutation fix in `vendor/pokechamp/pokechamp/prompts.py` — three locations where `pokemon._max_hp = 1` was changed to use a local variable `max_hp = pokemon.max_hp if pokemon.max_hp != 0 else 1` to prevent battle state corruption.
+
+### `asyncio.to_thread` in `get_prompt_messages`
+
+The `_build_agent_prompt` call (which runs pokechamp's CPU-bound damage calculations) is offloaded to a thread pool via `asyncio.to_thread()` (env.py line 508). This allows other battles to progress concurrently in the asyncio event loop instead of blocking on one battle's prompt construction.
+
+### Step Time Estimates
+
+| Setup | Batch Size | Step Time |
+|-------|-----------|-----------|
+| 1-node, DP=3 (self-play) | 16 | ~3-4 min |
+| 1-node, DP=3 (vs heuristic) | 16 | ~2-3 min |
+| 2-node, DP=6 (vs abyssal) | 128 | ~6-7 min |
+
 ## Monitoring
 
 ### wandb
 
 All training runs log to Weights & Biases. Key metrics:
 - `reward_mean` — should be ~0.5 for self-play (balanced wins/losses)
+- `wins`, `losses`, `draws` — separate game outcome counters
+- `won` — 1=win, 0=loss, -1=draw/crash/truncation (legacy, kept for backward compat)
 - `loss` — GRPO policy loss
 - `entropy` — action distribution entropy
 - `grad_norm` — gradient norm

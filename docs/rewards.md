@@ -18,7 +18,7 @@ PokemonBattleEnv(
 
 ### Single Source of Truth
 
-`_compute_terminal_reward(won)` at `env.py:725`:
+`_compute_terminal_reward(won)` at `env.py:748`:
 
 ```python
 def _compute_terminal_reward(self, won: bool | None) -> float:
@@ -27,7 +27,7 @@ def _compute_terminal_reward(self, won: bool | None) -> float:
     return self.reward_win if won else self.reward_loss
 ```
 
-`_assign_rewards(state)` at `env.py:731` handles both modes:
+`_assign_rewards(state)` at `env.py:754` handles both modes:
 - **Single-agent**: All steps get the same reward.
 - **Self-play**: P0 and P1 get explicit per-player rewards (not `1 - reward`).
   When rewards are non-uniform, pre-sets `step["advantage"]` using config-derived baseline `(reward_win + reward_loss) / 2`.
@@ -68,7 +68,7 @@ The old code used `1.0 - reward` which only works for [0, 1] scale.
 | Truncation | `None` | `True` | `reward_draw` (0.0) |
 | Crash/error | `None` | `False` | `reward_draw` (0.0) |
 
-Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The truncation check is in `game_over` (`@vf.stop` hook) at `env.py:444`.
+Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The truncation check is in `game_over` (`@vf.stop` hook) at `env.py:461`.
 
 ### Metrics
 
@@ -76,12 +76,17 @@ Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The
 
 ```python
 {
-    "won": 1 | 0 | -1,       # 1=win, 0=loss, -1=draw/crash/truncation
+    "won": 1 | 0 | -1,       # 1=win, 0=loss, -1=draw/crash/truncation (legacy)
+    "wins": 0 | 1,            # 1 if won, 0 otherwise
+    "losses": 0 | 1,          # 1 if lost, 0 otherwise
+    "draws": 0 | 1,           # 1 if draw/crash/truncation, 0 otherwise
     "game_turns": int,
     "trajectory_length": int,
     "parse_failures": int,
 }
 ```
+
+`wins`, `losses`, `draws` are separately logged to W&B, making it easy to track win rates directly without decoding the ternary `won` field.
 
 ## Step-Level Rewards
 

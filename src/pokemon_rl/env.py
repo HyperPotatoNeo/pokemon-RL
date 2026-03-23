@@ -136,6 +136,9 @@ class PokemonRubric(_RubricBase):
             super().__init__()
             self.add_reward_func(self.passthrough_reward)
             self.add_metric(self.won)
+            self.add_metric(self.wins)
+            self.add_metric(self.losses)
+            self.add_metric(self.draws)
             self.add_metric(self.game_turns)
             self.add_metric(self.parse_failures)
 
@@ -156,6 +159,15 @@ class PokemonRubric(_RubricBase):
 
     async def game_turns(self, state):
         return state.get("game_turn", 0)
+
+    async def wins(self, state):
+        return int(state.get("won") is True)
+
+    async def losses(self, state):
+        return int(state.get("won") is False)
+
+    async def draws(self, state):
+        return int(state.get("won") is None)
 
     async def parse_failures(self, state):
         return sum(
@@ -484,12 +496,16 @@ class PokemonBattleEnv(_EnvBase):
     # ------------------------------------------------------------------
 
     async def get_prompt_messages(self, state: dict) -> list[dict] | None:
-        """Build prompt for current agent via _build_agent_prompt."""
+        """Build prompt for current agent via _build_agent_prompt.
+
+        Offloads to a thread so CPU-bound state_translate (pokechamp damage
+        calcs) doesn't block the asyncio event loop and starve other battles.
+        """
         agent = state["_agents"][state["_current_agent_idx"]]
         assert agent.battle is not None, (
             "get_prompt_messages called with no active battle"
         )
-        return self._build_agent_prompt(agent, state)
+        return await asyncio.to_thread(self._build_agent_prompt, agent, state)
 
     def _build_agent_prompt(
         self, agent: _AgentContext, state: dict
@@ -714,6 +730,9 @@ class PokemonBattleEnv(_EnvBase):
         won = state.get("won")
         state["metrics"] = {
             "won": int(won) if won is not None else -1,
+            "wins": int(won is True),
+            "losses": int(won is False),
+            "draws": int(won is None),
             "game_turns": state.get("game_turn", 0),
             "trajectory_length": len(trajectory),
             "parse_failures": sum(
