@@ -22,7 +22,7 @@ trajectory_strategy = "branching"
 [orchestrator.client]
 # All inference on Node 1 (DP=4). No local inference on Node 2.
 # __INFERENCE_NODE__ replaced at launch time.
-base_url = "http://__INFERENCE_NODE__:8001/v1"
+base_url = ["http://__INFERENCE_NODE__:8001/v1"]
 
 [orchestrator.sampling]
 max_tokens = 800
