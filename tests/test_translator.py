@@ -488,3 +488,483 @@ class TestPokechampPromptIntegration:
             assert len(msgs) == 2
             # pokechamp prompts are typically very detailed
             assert len(msgs[1]["content"]) > 200
+
+
+# ---- full_obs_cot tests ----
+
+
+def _make_full_obs_pokemon(species, hp=1.0, active=False, fainted=False,
+                           moves=None, ability=None, item=None,
+                           status=None, boosts=None, type_1=None, type_2=None):
+    """Create a Pokemon-like mock with all fields needed by full_obs_cot."""
+    _, Pokemon = _load_poke_env_types()
+    p = Pokemon.__new__(Pokemon)
+    p._species = species
+    p._current_hp = 0 if fainted else int(hp * 100)
+    p._max_hp = 100
+    p._active = active
+    if fainted:
+        from poke_env.environment.status import Status
+        p._status = Status.FNT
+    else:
+        p._status = status
+    p._type_1 = type_1
+    p._type_2 = type_2
+    p._ability = ability
+    p._item = item or "unknown_item"
+    p._boosts = boosts or {"atk": 0, "def": 0, "spa": 0, "spd": 0, "spe": 0, "accuracy": 0, "evasion": 0}
+    p._moves = {}
+    if moves:
+        for m in moves:
+            p._moves[m.id] = m
+    p._base_stats = {"hp": 100, "atk": 100, "def": 100, "spa": 100, "spd": 100, "spe": 100}
+    p._last_request = {"stats": {"atk": 200, "def": 200, "spa": 200, "spd": 200, "spe": 200}}
+    p._terastallized = False
+    p._terastallized_type = None
+    p._level = 100
+    p._gender = None
+    p._shiny = False
+    p._effects = {}
+    p._protect_counter = 0
+    p._first_turn = False
+    p._must_recharge = False
+    p._preparing_move = None
+    p._preparing_target = False
+    p._revealed = True
+    p._status_counter = 0
+    p._weightkg = 60
+    p._heightm = 4
+    p._possible_abilities = [ability] if ability else ["static"]
+    p._last_details = ""
+    p._sets = None
+    p._battle_format = "gen9ou"
+    p._data = None
+    try:
+        from poke_env.data import GenData
+        p._data = GenData.from_gen(9)
+    except Exception:
+        pass
+    return p
+
+
+class MockBattleFullObs:
+    """Mock battle with all fields needed by full_obs_cot."""
+
+    def __init__(self, active=None, opp_active=None,
+                 moves=None, switches=None,
+                 opp_bench=None, team=None,
+                 side_conditions=None, opp_side_conditions=None,
+                 weather=None, fields=None,
+                 can_tera=None, opponent_can_tera=False,
+                 can_dynamax=False, battle_msg_history="",
+                 format_str="gen9ou"):
+        self.available_moves = moves or []
+        self.available_switches = switches or []
+        self._format = format_str
+        self.turn = 1
+        self.battle_tag = "test-battle"
+        self._teampreview = False
+        self.battle_msg_history = battle_msg_history
+
+        # Side conditions
+        self.side_conditions = side_conditions or {}
+        self.opponent_side_conditions = opp_side_conditions or {}
+
+        # Weather / terrain
+        self.weather = weather or {}
+        self.fields = fields or {}
+
+        # Tera / dynamax
+        self.can_tera = can_tera
+        self.opponent_can_tera = opponent_can_tera
+        self.can_dynamax = can_dynamax
+
+        # Active pokemon
+        self._active = active
+        self._opp_active = opp_active
+
+        # Build team dicts
+        self._team = {}
+        if active:
+            self._team[f"p1: {active.species}"] = active
+        if switches:
+            for s in switches:
+                self._team[f"p1: {s.species}"] = s
+
+        self._opponent_team = {}
+        if opp_active:
+            self._opponent_team[f"p2: {opp_active.species}"] = opp_active
+        if opp_bench:
+            for b in opp_bench:
+                self._opponent_team[f"p2: {b.species}"] = b
+
+    @property
+    def active_pokemon(self):
+        return self._active
+
+    @property
+    def opponent_active_pokemon(self):
+        return self._opp_active
+
+    @property
+    def team(self):
+        return self._team
+
+    @property
+    def opponent_team(self):
+        return self._opponent_team
+
+
+def _build_full_obs_battle(**kwargs):
+    """Helper to build a standard full_obs_cot test battle."""
+    from poke_env.environment.pokemon_type import PokemonType
+
+    active = _make_full_obs_pokemon(
+        "pikachu", hp=0.75, active=True,
+        type_1=PokemonType.ELECTRIC,
+        moves=[make_move("thunderbolt", 90), make_move("quickattack", 40)],
+        ability="static", item="lightball",
+    )
+    opp_active = _make_full_obs_pokemon(
+        "charizard", hp=0.92, active=True,
+        type_1=PokemonType.FIRE, type_2=PokemonType.FLYING,
+        moves=[make_move("flamethrower", 90)],
+        ability="blaze",
+    )
+    bench1 = _make_full_obs_pokemon(
+        "bulbasaur", hp=1.0,
+        type_1=PokemonType.GRASS, type_2=PokemonType.POISON,
+        moves=[make_move("razorleaf", 55)],
+        ability="overgrow",
+    )
+    opp_bench1 = _make_full_obs_pokemon(
+        "blastoise", hp=0.78,
+        type_1=PokemonType.WATER,
+        moves=[make_move("hydropump", 110)],
+        ability="torrent",
+    )
+    opp_bench2 = _make_full_obs_pokemon(
+        "venusaur", hp=0.5,
+        type_1=PokemonType.GRASS, type_2=PokemonType.POISON,
+        ability="chlorophyll",
+    )
+
+    defaults = dict(
+        active=active,
+        opp_active=opp_active,
+        moves=[make_move("thunderbolt", 90), make_move("quickattack", 40)],
+        switches=[bench1],
+        opp_bench=[opp_bench1, opp_bench2],
+    )
+    defaults.update(kwargs)
+    return MockBattleFullObs(**defaults)
+
+
+@requires_poke_env
+@requires_pokechamp
+class TestFullObsCotPrompt:
+    """Tests for the full_obs_cot prompt format."""
+
+    @pytest.mark.unit
+    def test_full_obs_cot_returns_two_messages(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle()
+        translator = StateTranslator(format_style="full_obs_cot")
+        messages = translator.battle_to_prompt(battle)
+
+        assert len(messages) == 2
+        assert messages[0]["role"] == "system"
+        assert messages[1]["role"] == "user"
+        assert len(messages[0]["content"]) > 0
+        assert len(messages[1]["content"]) > 0
+
+    @pytest.mark.unit
+    def test_full_obs_cot_has_all_tags(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle()
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        expected_tags = [
+            "<history>", "</history>",
+            "<field_conditions>", "</field_conditions>",
+            "<opponent_remaining_pokemon>", "</opponent_remaining_pokemon>",
+            "<your_team>", "</your_team>",
+            "<opponent_active_pokemon>", "</opponent_active_pokemon>",
+            "<your_active_pokemon>", "</your_active_pokemon>",
+            "<available_actions>", "</available_actions>",
+            "<constraint>", "</constraint>",
+        ]
+        for tag in expected_tags:
+            assert tag in content, f"Missing tag: {tag}"
+
+    @pytest.mark.unit
+    def test_full_obs_cot_tag_ordering(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle()
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        ordered_tags = [
+            "<history>",
+            "<field_conditions>",
+            "<opponent_remaining_pokemon>",
+            "<your_team>",
+            "<opponent_active_pokemon>",
+            "<your_active_pokemon>",
+            "<available_actions>",
+            "<constraint>",
+        ]
+        positions = [content.index(tag) for tag in ordered_tags]
+        assert positions == sorted(positions), (
+            f"Tags not in expected order. Positions: "
+            f"{list(zip(ordered_tags, positions))}"
+        )
+
+    @pytest.mark.unit
+    def test_full_obs_cot_opponent_bench_included(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle()
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        # Extract opponent_remaining section
+        start = content.index("<opponent_remaining_pokemon>")
+        end = content.index("</opponent_remaining_pokemon>")
+        section = content[start:end]
+
+        assert "blastoise" in section, "Bench Pokemon blastoise should appear"
+        assert "venusaur" in section, "Bench Pokemon venusaur should appear"
+        assert "charizard" not in section, "Active opponent should NOT be in bench section"
+
+    @pytest.mark.unit
+    def test_full_obs_cot_opponent_bench_excludes_fainted(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.pokemon_type import PokemonType
+
+        fainted_mon = _make_full_obs_pokemon(
+            "magikarp", fainted=True,
+            type_1=PokemonType.WATER,
+        )
+        battle = _build_full_obs_battle(opp_bench=[fainted_mon])
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<opponent_remaining_pokemon>")
+        end = content.index("</opponent_remaining_pokemon>")
+        section = content[start:end]
+
+        assert "magikarp" not in section, "Fainted Pokemon should NOT appear in bench"
+
+    @pytest.mark.unit
+    def test_full_obs_cot_opponent_bench_excludes_active(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle()
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        # Active opponent in its own section, not in remaining
+        opp_start = content.index("<opponent_active_pokemon>")
+        opp_end = content.index("</opponent_active_pokemon>")
+        opp_section = content[opp_start:opp_end]
+        assert "charizard" in opp_section
+
+        bench_start = content.index("<opponent_remaining_pokemon>")
+        bench_end = content.index("</opponent_remaining_pokemon>")
+        bench_section = content[bench_start:bench_end]
+        assert "charizard" not in bench_section
+
+    @pytest.mark.unit
+    def test_full_obs_cot_constraint_format(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle()
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<constraint>")
+        end = content.index("</constraint>")
+        section = content[start:end]
+
+        assert "JSON" in section
+        assert "thought" in section
+        assert "move" in section
+        assert "switch" in section
+        # No sentence limit
+        assert "3 sentences" not in section
+
+    @pytest.mark.unit
+    def test_full_obs_cot_fainted_active_forces_switch(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.pokemon_type import PokemonType
+        from poke_env.environment.status import Status
+
+        active = _make_full_obs_pokemon(
+            "pikachu", fainted=True, active=True,
+            type_1=PokemonType.ELECTRIC,
+        )
+        bench = _make_full_obs_pokemon(
+            "bulbasaur", hp=1.0,
+            type_1=PokemonType.GRASS,
+        )
+        opp = _make_full_obs_pokemon(
+            "charizard", hp=0.9, active=True,
+            type_1=PokemonType.FIRE,
+        )
+        battle = MockBattleFullObs(
+            active=active, opp_active=opp,
+            moves=[], switches=[bench],
+        )
+        translator = StateTranslator(format_style="full_obs_cot")
+        messages = translator.battle_to_prompt(battle)
+
+        # System prompt should mention fainted
+        assert "fainted" in messages[0]["content"].lower()
+
+        # Constraint should only allow switch
+        content = messages[1]["content"]
+        start = content.index("<constraint>")
+        end = content.index("</constraint>")
+        section = content[start:end]
+        assert "switch" in section
+        # Should NOT have move option in constraint when fainted
+        assert '"move"' not in section
+
+    @pytest.mark.unit
+    def test_full_obs_cot_empty_opponent_bench(self):
+        from pokemon_rl.translator import StateTranslator
+
+        battle = _build_full_obs_battle(opp_bench=[])
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<opponent_remaining_pokemon>")
+        end = content.index("</opponent_remaining_pokemon>")
+        section = content[start:end]
+
+        assert "no revealed" in section.lower() or "No revealed" in section
+
+    @pytest.mark.unit
+    def test_full_obs_cot_is_default(self):
+        from pokemon_rl.translator import StateTranslator
+
+        translator = StateTranslator()
+        assert translator.format_style == "full_obs_cot"
+
+    @pytest.mark.unit
+    def test_full_obs_cot_no_revealed_moves(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.pokemon_type import PokemonType
+
+        # Opponent bench with no moves revealed
+        opp_bench = _make_full_obs_pokemon(
+            "gyarados", hp=1.0,
+            type_1=PokemonType.WATER, type_2=PokemonType.FLYING,
+            moves=[],  # empty — just switched in
+            ability="intimidate",
+        )
+        battle = _build_full_obs_battle(opp_bench=[opp_bench])
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<opponent_remaining_pokemon>")
+        end = content.index("</opponent_remaining_pokemon>")
+        section = content[start:end]
+
+        assert "gyarados" in section
+        assert "none" in section.lower() or "No revealed" in section
+
+    @pytest.mark.unit
+    def test_full_obs_cot_opponent_status_shown(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.pokemon_type import PokemonType
+        from poke_env.environment.status import Status
+
+        burned_mon = _make_full_obs_pokemon(
+            "tyranitar", hp=0.6,
+            type_1=PokemonType.ROCK, type_2=PokemonType.DARK,
+            status=Status.BRN,
+            ability="sandstream",
+        )
+        battle = _build_full_obs_battle(opp_bench=[burned_mon])
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<opponent_remaining_pokemon>")
+        end = content.index("</opponent_remaining_pokemon>")
+        section = content[start:end]
+
+        assert "tyranitar" in section
+        assert "burnt" in section.lower() or "burn" in section.lower()
+
+    @pytest.mark.unit
+    def test_full_obs_cot_weather_terrain(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.weather import Weather
+        from poke_env.environment.field import Field
+
+        battle = _build_full_obs_battle(
+            weather={Weather.SANDSTORM: 1},
+            fields={Field.ELECTRIC_TERRAIN: 1},
+        )
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<field_conditions>")
+        end = content.index("</field_conditions>")
+        section = content[start:end]
+
+        assert "sandstorm" in section.lower()
+        assert "electric" in section.lower()
+
+    @pytest.mark.unit
+    def test_full_obs_cot_boost_stages_shown(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.pokemon_type import PokemonType
+
+        opp_active = _make_full_obs_pokemon(
+            "charizard", hp=0.92, active=True,
+            type_1=PokemonType.FIRE, type_2=PokemonType.FLYING,
+            boosts={"atk": 2, "def": 0, "spa": 0, "spd": 0, "spe": -1, "accuracy": 0, "evasion": 0},
+            ability="blaze",
+        )
+        battle = _build_full_obs_battle(opp_active=opp_active)
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        start = content.index("<opponent_active_pokemon>")
+        end = content.index("</opponent_active_pokemon>")
+        section = content[start:end]
+
+        assert "+2" in section, "Should show +2 boost stage for Atk"
+        assert "-1" in section, "Should show -1 boost stage for Spe"
+
+    @pytest.mark.unit
+    def test_full_obs_cot_tera_action_shown(self):
+        from pokemon_rl.translator import StateTranslator
+        from poke_env.environment.pokemon_type import PokemonType
+
+        battle = _build_full_obs_battle(
+            can_tera=PokemonType.FAIRY,
+            opponent_can_tera=True,
+        )
+        translator = StateTranslator(format_style="full_obs_cot")
+        content = translator.battle_to_prompt(battle)[1]["content"]
+
+        # Constraint should include terastallize option
+        c_start = content.index("<constraint>")
+        c_end = content.index("</constraint>")
+        constraint = content[c_start:c_end]
+        assert "terastallize" in constraint
+
+        # Field conditions should show tera info
+        fc_start = content.index("<field_conditions>")
+        fc_end = content.index("</field_conditions>")
+        fc = content[fc_start:fc_end]
+        assert "fairy" in fc.lower() or "Fairy" in fc
+        assert "terastallize" in fc.lower()

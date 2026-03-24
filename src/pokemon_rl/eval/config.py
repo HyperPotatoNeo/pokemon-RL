@@ -33,7 +33,7 @@ class OpponentConfig:
     base_url: str | None = None
     max_tokens: int = 800
     temperature: float = 1.0
-    observation_format: str = "pokechamp_io"
+    observation_format: str = "full_obs_cot"
 
     def validate(self) -> None:
         """Validate that required fields are present for each type."""
@@ -91,7 +91,7 @@ class PokemonEvalConfig:
     n_battles_per_opp: int = 100
     max_concurrent_battles: int = 8
     max_game_turns: int = 200
-    observation_format: str = "pokechamp_io"
+    observation_format: str = "full_obs_cot"
     team_dir: str | None = None
 
     # Sampling for agent

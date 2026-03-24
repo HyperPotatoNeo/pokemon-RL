@@ -237,7 +237,7 @@ def create_opponent(
             server_config=server_config,
             account_name=opp_name,
             team=team,
-            observation_format=llm_kwargs.get("observation_format", "pokechamp_io"),
+            observation_format=llm_kwargs.get("observation_format", "full_obs_cot"),
             max_tokens=llm_kwargs.get("max_tokens", 800),
             temperature=llm_kwargs.get("temperature", 1.0),
         )

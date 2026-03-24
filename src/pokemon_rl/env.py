@@ -206,7 +206,7 @@ class PokemonBattleEnv(_EnvBase):
         server_host: Showdown hostname (for cross-node play)
         play_mode: "single" (vs heuristic) or "self_play" (both train)
         opponent_type: Heuristic type for single mode: "random", "max_damage"
-        observation_format: "pokechamp_io" or "simple"
+        observation_format: "full_obs_cot", "pokechamp_io", or "simple"
         system_prompt: Override system prompt (None = use translator's)
         reward_win: Terminal reward for wins (default 1.0)
         reward_loss: Terminal reward for losses (default 0.0)
@@ -235,7 +235,7 @@ class PokemonBattleEnv(_EnvBase):
         server_host: str = "localhost",
         play_mode: str = "single",
         opponent_type: str = "random",
-        observation_format: str = "pokechamp_io",
+        observation_format: str = "full_obs_cot",
         system_prompt: str | None = None,
         reward_win: float = 1.0,
         reward_loss: float = 0.0,

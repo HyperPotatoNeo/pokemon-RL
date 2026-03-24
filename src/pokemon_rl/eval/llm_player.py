@@ -32,7 +32,7 @@ class LLMPlayer:
         model_name: str,
         battle_format: str,
         server_config: Any,
-        observation_format: str = "pokechamp_io",
+        observation_format: str = "full_obs_cot",
         max_tokens: int = 800,
         temperature: float = 1.0,
         timeout: float = 60.0,
@@ -46,7 +46,7 @@ class LLMPlayer:
             model_name: Model served by vLLM (e.g., "Qwen/Qwen2.5-1.5B-Instruct")
             battle_format: Pokemon Showdown format string
             server_config: poke-env ServerConfiguration
-            observation_format: "pokechamp_io" or "simple"
+            observation_format: "full_obs_cot", "pokechamp_io", or "simple"
             max_tokens: Max tokens for API call
             temperature: Sampling temperature
             timeout: Per-move API call timeout in seconds
