@@ -1,0 +1,49 @@
+# Pokemon-RL Evaluation Config
+#
+# Usage:
+#   python -m pokemon_rl.eval.runner configs/pokemon/eval_example.toml
+#   python -m pokemon_rl.eval.runner configs/pokemon/eval_example.toml --node_rank 0 --n_nodes 2
+#
+# GPU allocation per node (4 GPUs, all DP):
+#   Heuristic: Agent DP=4 (GPUs 0,1,2,3)
+#   Metamon:   Agent DP=3 (GPUs 0,1,2), Metamon 1 GPU (GPU 3)
+#   LLM:       Agent DP=2 (GPUs 0,1), Opponent DP=2 (GPUs 2,3)
+
+agent_model = "Qwen/Qwen3-4B-Instruct-2507"
+agent_base_url = "http://localhost:8001/v1"
+
+battle_format = "gen9ou"
+n_battles_per_opp = 100
+max_concurrent_battles = 8
+max_game_turns = 200
+observation_format = "pokechamp_io"
+team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
+showdown_port = 8000
+output_dir = "eval_outputs/qwen3-4b-instruct"
+sampling_max_tokens = 800
+sampling_temperature = 1.0
+
+[[opponents]]
+name = "abyssal"
+type = "heuristic"
+heuristic = "abyssal"
+
+[[opponents]]
+name = "kakuna"
+type = "metamon"
+agent = "kakuna"
+gpu_ids = [3]
+
+[[opponents]]
+name = "qwen2.5-1.5b"
+type = "llm"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+base_url = "http://localhost:8002/v1"
+gpu_ids = [2, 3]
+
+[[opponents]]
+name = "qwen3-4b-self"
+type = "llm"
+model_name = "Qwen/Qwen3-4B-Instruct-2507"
+base_url = "http://localhost:8003/v1"
+gpu_ids = [2, 3]

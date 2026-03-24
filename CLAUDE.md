@@ -49,9 +49,10 @@ Layer 1: ShowdownEngine    — Manages Node.js Showdown process
 | `src/pokemon_rl/translator.py` | StateTranslator (simple + pokechamp_io) |
 | `src/pokemon_rl/env.py` | PokemonBattleEnv (MultiTurnEnv hooks) |
 | `src/pokemon_rl/data.py` | TrajectoryLogger (JSONL battle logging) |
+| `src/pokemon_rl/eval/` | Eval package: config, llm_player, runner, report |
 | `tests/conftest.py` | Fixtures, capability detection, skip markers |
-| `scripts/` | Generic scripts (setup, test, launch); cluster-specific in `local_scripts/` |
-| `configs/pokemon/` | RL training TOML configs (selfplay, vs_heuristic, test) |
+| `scripts/` | Generic scripts (setup, test, launch, eval); cluster-specific in `local_scripts/` |
+| `configs/pokemon/` | RL training + eval TOML configs |
 
 ## Dependencies
 
@@ -69,6 +70,7 @@ uv pip install -e ".[test]"           # our package
 
 - `@pytest.mark.unit` — No external deps. Runs anywhere with the venv active.
 - `@pytest.mark.integration` — Needs Showdown server + poke-env (compute node).
+- `@pytest.mark.gpu` — Needs Showdown + vLLM servers (GPU compute node).
 
 ## Running Tests
 
@@ -92,12 +94,30 @@ bash scripts/run_tests.sh -m integration -v
 | `docs/testing.md` | Before writing tests — no-fall-through philosophy, mock patterns |
 | `docs/rl_training.md` | Before RL training work — configs, prompt construction, launching |
 | `docs/deployment.md` | Before running on Perlmutter — containers, Showdown, SLURM |
+| `docs/eval_testing_protocol.md` | Eval testing tiers, commands, debugging playbook |
 | `docs/api.md` | API reference for all public classes and methods |
+
+## Eval
+
+Standalone eval framework in `src/pokemon_rl/eval/`. Runs trained agents against
+heuristic, metamon, or LLM opponents. See `docs/eval_testing_protocol.md` for the
+full testing protocol and `scripts/launch_eval.sh` for the generic launcher.
+
+```bash
+# Generic launch (inside container with venv active):
+bash scripts/launch_eval.sh configs/pokemon/eval_example.toml
+
+# NERSC production (sbatch):
+sbatch local_scripts/launch_eval_prod.sh configs/pokemon/eval_example.toml
+```
+
+Key files: `src/pokemon_rl/eval/{config,llm_player,runner,report}.py`,
+`tests/test_eval_{unit,integration,gpu}.py`, `configs/pokemon/eval_example.toml`.
 
 ## Current Status
 
-Phase 5 RL training integration complete + multi-node production training active.
-298+ tests passing. Production run: Qwen3-4B vs abyssal, batch_size=128, 600 steps, 2 nodes.
+Phase 5 RL training + eval feature complete. Multi-node production training active.
+340 tests passing (298 existing + 42 eval). Production run: Qwen3-4B vs abyssal, batch_size=128, 600 steps, 2 nodes.
 
 Key details:
 - pokechamp_io prompts include CoT constraint: forces 3-sentence reasoning inside JSON

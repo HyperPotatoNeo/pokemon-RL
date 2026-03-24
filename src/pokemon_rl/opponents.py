@@ -45,6 +45,9 @@ _REGISTRY: dict[str, OpponentSpec] = {
 
     # External opponents — separate process, matched via Showdown ladder
     "kakuna": OpponentSpec(kind="external"),
+
+    # LLM opponents — in-process Player that calls vLLM API
+    "llm": OpponentSpec(kind="direct", opponent_type="llm"),
 }
 
 

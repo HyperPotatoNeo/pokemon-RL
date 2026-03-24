@@ -226,8 +226,24 @@ def create_opponent(
             **kwargs,
         )
 
+    elif opponent_type == "llm":
+        from pokemon_rl.eval.llm_player import LLMPlayer
+
+        llm_kwargs = kwargs.get("llm_kwargs", {})
+        return LLMPlayer.create(
+            base_url=llm_kwargs["base_url"],
+            model_name=llm_kwargs["model_name"],
+            battle_format=battle_format,
+            server_config=server_config,
+            account_name=opp_name,
+            team=team,
+            observation_format=llm_kwargs.get("observation_format", "pokechamp_io"),
+            max_tokens=llm_kwargs.get("max_tokens", 800),
+            temperature=llm_kwargs.get("temperature", 1.0),
+        )
+
     else:
         raise ValueError(
             f"Unknown opponent_type: {opponent_type}. "
-            f"Expected: random, max_damage, abyssal, callback, controllable"
+            f"Expected: random, max_damage, abyssal, callback, controllable, llm"
         )

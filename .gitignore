@@ -1,10 +1,6 @@
 # Scripts — generic versions tracked, cluster-specific gitignored
-scripts/*
-!scripts/README.md
-!scripts/setup_node.sh
-!scripts/setup_node_hostnet.sh
-!scripts/run_tests.sh
-!scripts/launch_rl.sh
+# All scripts/ are tracked (no ignore rules needed)
+# local_scripts/ are cluster-specific and gitignored below
 
 # Local cluster scripts (user-specific, never pushed)
 local_scripts/
@@ -31,6 +27,7 @@ uv.lock
 .DS_Store
 
 # Logs & SLURM output
+logs/
 *.log
 *.out
 *.err

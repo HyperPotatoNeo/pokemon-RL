@@ -153,6 +153,51 @@ rl @ /path/to/pokemon-rl/configs/pokemon/rl_selfplay.toml
 
 See [docs/rl_training.md](docs/rl_training.md) for the full RL training guide: config reference, prompt construction, launching, and architecture.
 
+## Evaluation
+
+Evaluate trained agents against heuristic, metamon, or LLM opponents.
+
+```bash
+# Generic launch (inside container/environment with venv active):
+bash scripts/launch_eval.sh configs/pokemon/eval_example.toml
+
+# NERSC production (sbatch with container):
+sbatch local_scripts/launch_eval_prod.sh configs/pokemon/eval_example.toml
+
+# Or run the eval runner directly (Showdown + agent vLLM must already be running):
+python -m pokemon_rl.eval.runner configs/pokemon/eval_example.toml
+```
+
+### Eval Config
+
+```toml
+agent_model = "Qwen/Qwen3-4B-Instruct-2507"
+agent_base_url = "http://localhost:8001/v1"
+battle_format = "gen9ou"
+n_battles_per_opp = 100
+max_concurrent_battles = 8
+observation_format = "pokechamp_io"
+output_dir = "eval_outputs/my_eval"
+
+[[opponents]]
+name = "abyssal"
+type = "heuristic"
+heuristic = "abyssal"
+
+[[opponents]]
+name = "qwen2.5-1.5b"
+type = "llm"
+model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+base_url = "http://localhost:8002/v1"
+gpu_ids = [2, 3]
+```
+
+Opponent types: `heuristic` (abyssal, max_damage, random), `metamon` (kakuna), `llm` (any vLLM-served model). The runner manages LLM opponent vLLM lifecycle automatically when `gpu_ids` is specified.
+
+Output: per-opponent JSONL results + summary table with win/loss/draw rates, stderr, and avg game turns.
+
+See [docs/eval_testing_protocol.md](docs/eval_testing_protocol.md) for the full eval testing protocol.
+
 ## Documentation
 
 | Document | Contents |
@@ -164,11 +209,12 @@ See [docs/rl_training.md](docs/rl_training.md) for the full RL training guide: c
 | [docs/testing.md](docs/testing.md) | Test philosophy, markers, running tests, mock patterns |
 | [docs/rl_training.md](docs/rl_training.md) | RL training setup, configs, prompt construction, launching |
 | [docs/deployment.md](docs/deployment.md) | Cluster deployment, containers, multi-node, RL deployment |
+| [docs/eval_testing_protocol.md](docs/eval_testing_protocol.md) | Eval testing protocol, commands, debugging playbook |
 | [docs/api.md](docs/api.md) | Public API reference for all classes and methods |
 
 ## Project Status
 
-**Phase 5 RL training integration complete.** 298+ tests passing. 3 production configs, generic launch script, full documentation. Successfully trained Qwen3-4B via GRPO self-play on gen9randombattle.
+**Phase 5 RL training + eval feature complete.** 340 tests passing (unit + integration + GPU). Production training active (Qwen3-4B vs abyssal, 2 nodes). Eval framework supports heuristic, metamon, and LLM-vs-LLM opponents with per-opponent statistics.
 
 See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 

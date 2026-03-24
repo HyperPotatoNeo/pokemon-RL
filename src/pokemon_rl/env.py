@@ -225,6 +225,7 @@ class PokemonBattleEnv(_EnvBase):
         "observation_format", "system_prompt", "reward_win", "reward_loss",
         "reward_draw", "step_reward_fn", "max_game_turns", "num_battles",
         "team_dir", "team_fn", "score_rollouts", "max_concurrent_battles",
+        "llm_opponent_kwargs",
     })
 
     def __init__(
@@ -245,6 +246,7 @@ class PokemonBattleEnv(_EnvBase):
         max_concurrent_battles: int = 8,
         team_dir: str | None = None,
         team_fn: Callable[[], str] | None = None,
+        llm_opponent_kwargs: dict | None = None,
         **kwargs,
     ):
         # Backward compat: opponent_type="ladder" -> "kakuna"
@@ -281,6 +283,7 @@ class PokemonBattleEnv(_EnvBase):
         self.step_reward_fn = step_reward_fn
         self.max_game_turns = max_game_turns
         self.max_concurrent_battles = max_concurrent_battles
+        self.llm_opponent_kwargs = llm_opponent_kwargs
         # None = preserve translator's system prompt (e.g. pokechamp's rich prompt)
         # Explicit string = override with custom prompt
         self._system_prompt = system_prompt
@@ -409,14 +412,18 @@ class PokemonBattleEnv(_EnvBase):
                 player_team = self.team_fn() if self.team_fn else None
 
                 if spec.kind == "direct":
-                    # In-process heuristic opponent
+                    # In-process opponent (heuristic or LLM)
                     opponent_team = (
                         self.team_fn() if self.team_fn else None
                     )
+                    opp_kwargs = {}
+                    if self.llm_opponent_kwargs:
+                        opp_kwargs["llm_kwargs"] = self.llm_opponent_kwargs
                     battle = await manager.start_battle(
                         opponent_type=spec.opponent_type,
                         player_team=player_team,
                         opponent_team=opponent_team,
+                        **opp_kwargs,
                     )
                 elif spec.kind == "external":
                     # External process — serialized ladder to prevent
@@ -912,10 +919,14 @@ class PokemonBattleEnv(_EnvBase):
 
             if spec.kind == "direct":
                 opponent_team = self.team_fn() if self.team_fn else None
+                opp_kwargs = {}
+                if self.llm_opponent_kwargs:
+                    opp_kwargs["llm_kwargs"] = self.llm_opponent_kwargs
                 battle = await manager.start_battle(
                     opponent_type=spec.opponent_type,
                     player_team=player_team,
                     opponent_team=opponent_team,
+                    **opp_kwargs,
                 )
             elif spec.kind == "external":
                 battle = await manager.start_battle_ladder(
