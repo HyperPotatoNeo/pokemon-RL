@@ -31,7 +31,7 @@ battle_format = "gen9ou"
 play_mode = "single"
 opponent_type = "max_damage"   # Options: "random", "max_damage", "abyssal", "kakuna" (needs external process)
 port = 8000
-observation_format = "pokechamp_io"
+observation_format = "full_obs_cot"
 reward_win = 1.0
 reward_loss = 0.0
 reward_draw = 0.0           # Deliberate: draws = losses. Do not change without discussion.
