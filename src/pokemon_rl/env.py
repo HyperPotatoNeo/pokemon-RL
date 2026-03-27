@@ -101,6 +101,9 @@ try:
 except ImportError:
     _HAS_VERIFIERS = False
 
+if _HAS_VERIFIERS:
+    from verifiers.utils.message_utils import concat_messages
+
 _EnvBase = vf.MultiTurnEnv if _HAS_VERIFIERS else object
 _RubricBase = vf.Rubric if _HAS_VERIFIERS else object
 _vf_stop = vf.stop if _HAS_VERIFIERS else lambda fn: fn
@@ -188,6 +191,8 @@ class _AgentContext:
     message_history: list = field(default_factory=list)
     parse_failure_count: int = 0
     force_switch_count: int = 0
+    conversation: list = field(default_factory=list)       # accumulated messages for interleaved
+    interleaved_game_step: int = 0                         # per-agent game turn counter
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +234,7 @@ class PokemonBattleEnv(_EnvBase):
         "reward_draw", "step_reward_fn", "bad_step_penalty", "max_game_turns",
         "num_battles", "team_dir", "team_fn", "score_rollouts",
         "max_concurrent_battles", "llm_opponent_kwargs",
+        "interleaved", "reasoning_tokens", "extraction_tokens",
     })
 
     def __init__(
@@ -245,6 +251,9 @@ class PokemonBattleEnv(_EnvBase):
         reward_draw: float = 0.0,  # deliberately same as loss — no draw exploitation
         step_reward_fn: Callable | None = None,
         bad_step_penalty: float = 0.0,
+        interleaved: bool = False,
+        reasoning_tokens: int = 512,
+        extraction_tokens: int = 50,
         max_game_turns: int = 200,
         num_battles: int = 1000,
         max_concurrent_battles: int = 8,
@@ -286,6 +295,9 @@ class PokemonBattleEnv(_EnvBase):
         self.reward_draw = reward_draw
         self.step_reward_fn = step_reward_fn
         self.bad_step_penalty = bad_step_penalty
+        self._interleaved = interleaved
+        self._reasoning_tokens = reasoning_tokens
+        self._extraction_tokens = extraction_tokens
         self.max_game_turns = max_game_turns
         self.max_concurrent_battles = max_concurrent_battles
         self.llm_opponent_kwargs = llm_opponent_kwargs
@@ -311,6 +323,12 @@ class PokemonBattleEnv(_EnvBase):
                     f"but no team_dir or team_fn was provided. "
                     f"Showdown may reject games or assign random teams."
                 )
+
+        if self._interleaved and self.play_mode == "self_play":
+            logger.warning(
+                "interleaved=True with self_play: use trajectory_strategy='branching' "
+                "in config (interleaved strategy breaks prefix invariant across agents)"
+            )
 
         if _HAS_VERIFIERS:
             # Prevent score_rollouts=False from being passed via kwargs (C7)
@@ -380,6 +398,9 @@ class PokemonBattleEnv(_EnvBase):
         # Fields required by branch_rollout (prime-rl/orchestrator/trajectories.py)
         state.setdefault("error", None)
         state.setdefault("example_id", "battle")
+
+        state["_interleaved"] = self._interleaved
+        state["_phase"] = 0
 
         try:
             from pokemon_rl.battle import BattleManager
@@ -468,6 +489,14 @@ class PokemonBattleEnv(_EnvBase):
     @_vf_stop
     async def game_over(self, state: dict) -> bool:
         """Stop condition: game ended or max turns reached."""
+        if state.get("_interleaved") and state.get("trajectory"):
+            last_tokens = state["trajectory"][-1].get("tokens")
+            if last_tokens:
+                total = len(last_tokens.get("prompt_ids", [])) + len(last_tokens.get("completion_ids", []))
+                if total > int(0.9 * (self.max_seq_len or 32768)):
+                    state["game_over"] = True
+                    state["truncated"] = True
+                    return True
         if state.get("game_over", False):
             return True
         if state.get("game_turn", 0) >= self.max_game_turns:
@@ -519,6 +548,28 @@ class PokemonBattleEnv(_EnvBase):
 
     async def get_prompt_messages(self, state: dict) -> list[dict] | None:
         """Build prompt for current agent via _build_agent_prompt."""
+        if state.get("_interleaved"):
+            agent = state["_agents"][state["_current_agent_idx"]]
+            phase = state["_phase"]
+
+            if phase == 0:  # Reasoning phase
+                if agent.interleaved_game_step == 0:
+                    messages = self.translator.battle_to_prompt_interleaved_first(agent.battle)
+                    if self._system_prompt is not None:
+                        if messages and messages[0].get("role") == "system":
+                            messages[0] = {"role": "system", "content": self._system_prompt}
+                        else:
+                            messages.insert(0, {"role": "system", "content": self._system_prompt})
+                    agent.conversation = list(messages)
+                else:
+                    light_msg = self.translator.battle_to_prompt_light(agent.battle)
+                    agent.conversation.append(light_msg)
+                return list(agent.conversation)
+            else:  # Extraction phase
+                extract_msg = self.translator.extraction_prompt(agent.battle)
+                agent.conversation.append(extract_msg)
+                return list(agent.conversation)
+
         agent = state["_agents"][state["_current_agent_idx"]]
         assert agent.battle is not None, (
             "get_prompt_messages called with no active battle"
@@ -553,6 +604,21 @@ class PokemonBattleEnv(_EnvBase):
         return messages
 
     # ------------------------------------------------------------------
+    # Hook: get_model_response (interleaved token budget)
+    # ------------------------------------------------------------------
+
+    async def get_model_response(self, state, prompt, sampling_args=None, **kwargs):
+        if state.get("_interleaved"):
+            phase = state["_phase"]
+            max_tok = self._reasoning_tokens if phase == 0 else self._extraction_tokens
+            merged = dict(state.get("sampling_args") or {})
+            merged["max_tokens"] = max_tok
+            return await super().get_model_response(state, prompt, sampling_args=merged, **kwargs)
+        if sampling_args is not None:
+            return await super().get_model_response(state, prompt, sampling_args=sampling_args, **kwargs)
+        return await super().get_model_response(state, prompt, **kwargs)
+
+    # ------------------------------------------------------------------
     # Hook: add_trajectory_step
     # ------------------------------------------------------------------
 
@@ -560,6 +626,60 @@ class PokemonBattleEnv(_EnvBase):
         self, state: dict, trajectory_step: dict
     ) -> None:
         """Parse action from LLM response, advance game, update agent state."""
+        if state.get("_interleaved"):
+            agent = state["_agents"][state["_current_agent_idx"]]
+            phase = state["_phase"]
+
+            trajectory_step.setdefault("temperature", 1.0)
+
+            extras = trajectory_step.get("extras", {})
+            extras["agent_idx"] = state["_current_agent_idx"]
+            extras["game_turn"] = agent.battle.turn if agent.battle else 0
+            extras["phase"] = phase
+            extras["game_step"] = agent.interleaved_game_step
+            trajectory_step["extras"] = extras
+
+            state["trajectory"].append(trajectory_step)
+            agent.steps.append(trajectory_step)
+
+            completion = trajectory_step.get("completion", "")
+            response_text = self.translator.extract_completion_text(completion)
+            agent.conversation.append({"role": "assistant", "content": response_text})
+
+            if phase == 0:
+                state["_phase"] = 1
+                return
+
+            # Extraction phase
+            action = self.translator.parse_action(response_text, agent.battle)
+            parse_failed = action is None
+            if parse_failed:
+                action = self.translator.get_fallback_action(agent.battle)
+                agent.parse_failure_count += 1
+
+            extras["parse_failed"] = parse_failed
+            extras["force_switch"] = bool(getattr(agent.battle, "force_switch", False))
+            extras["parsed_action"] = action.message if action and hasattr(action, "message") else str(action)
+
+            agent_idx = state["_current_agent_idx"]
+            if self.play_mode == "self_play":
+                await self._advance_selfplay(state, action, agent_idx)
+            else:
+                manager = state.get("manager")
+                if manager and action:
+                    next_battle, done = await manager.step(action)
+                    agent.battle = next_battle
+                    if done:
+                        state["game_over"] = True
+                        result = manager.get_result()
+                        state["won"] = result["won"]
+                    elif next_battle:
+                        state["game_turn"] = max(state.get("game_turn", 0), next_battle.turn)
+
+            state["_phase"] = 0
+            agent.interleaved_game_step += 1
+            return
+
         agent_idx = state["_current_agent_idx"]
         agent = state["_agents"][agent_idx]
         battle = agent.battle
@@ -726,6 +846,25 @@ class PokemonBattleEnv(_EnvBase):
         through the verifiers pipeline, PokemonRubric also provides metrics
         via score_group (which overwrites state["metrics"]).
         """
+        if state.get("_interleaved"):
+            self._assign_rewards(state)
+            trajectory = state["trajectory"]
+            state["reward"] = self._compute_terminal_reward(state.get("won"))
+            state["completion"] = trajectory[-1]["completion"] if trajectory else []
+            won = state.get("won")
+            state["metrics"] = {
+                "won": int(won) if won is not None else -1,
+                "wins": int(won is True),
+                "losses": int(won is False),
+                "draws": int(won is None),
+                "game_turns": state.get("game_turn", 0),
+                "trajectory_length": len(trajectory),
+                "parse_failures": sum(1 for s in trajectory if s.get("extras", {}).get("parse_failed")),
+            }
+            for step in trajectory:
+                step.pop("response", None)
+            return
+
         self._assign_rewards(state)
 
         trajectory = state["trajectory"]
@@ -817,7 +956,7 @@ class PokemonBattleEnv(_EnvBase):
                 step["reward"] += step_r
 
         # --- Penalize truncated / parse-failed steps ---
-        if self.bad_step_penalty:
+        if self.bad_step_penalty and not state.get("_interleaved"):
             for step in trajectory:
                 is_bad = (
                     step.get("extras", {}).get("parse_failed")

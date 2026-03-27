@@ -863,6 +863,329 @@ class StateTranslator:
             {"role": "user", "content": user_prompt},
         ]
 
+    # ------------------------------------------------------------------
+    # Interleaved trajectory prompt builders
+    # ------------------------------------------------------------------
+
+    def battle_to_prompt_interleaved_first(self, battle: Any) -> list[dict[str, str]]:
+        """First-turn prompt for interleaved trajectory mode.
+
+        Calls _full_obs_cot_prompt to get the base messages, then modifies:
+        1. System prompt: appends multi-turn instruction
+        2. Constraint section: replaces JSON output instruction with
+           reasoning-only instruction (extraction happens separately).
+
+        Returns:
+            List of message dicts: [{"role": "system", ...}, {"role": "user", ...}]
+        """
+        messages = self._full_obs_cot_prompt(battle)
+
+        # 1. Append multi-turn instruction to system prompt
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {
+                "role": "system",
+                "content": messages[0]["content"]
+                + "\nYou will play multiple turns. Each turn I will describe "
+                "the situation and you will reason about it, then I will ask "
+                "you to choose an action.",
+            }
+
+        # 2. Replace the <constraint> section in the user message
+        for msg in messages:
+            if msg.get("role") == "user":
+                import re as _re
+
+                new_constraint = (
+                    "<constraint>\n"
+                    "Analyze the current situation carefully. Consider type "
+                    "matchups, speed tiers, HP thresholds, and strategic "
+                    "positioning. Reason about which action is best and why. "
+                    "Do not output JSON — I will ask for your choice separately.\n"
+                    "</constraint>"
+                )
+                msg["content"] = _re.sub(
+                    r"<constraint>\n.*?</constraint>",
+                    new_constraint,
+                    msg["content"],
+                    flags=_re.DOTALL,
+                )
+                break
+
+        return messages
+
+    def battle_to_prompt_light(self, battle: Any) -> dict[str, str]:
+        """Compact observation prompt for subsequent turns in interleaved mode.
+
+        Returns a single user message with compact sections:
+        <situation>, <hp_summary>, <field>, <available_actions>.
+
+        Uses LocalSim for damage estimates on available moves.
+        Estimated ~400-500 tokens.
+
+        Returns:
+            Single message dict: {"role": "user", "content": ...}
+        """
+        try:
+            import poke_env  # noqa: F401
+            from poke_env.player.local_simulation import LocalSim
+            from pokechamp.data_cache import (
+                get_cached_move_effect,
+                get_cached_pokemon_move_dict,
+                get_cached_ability_effect,
+                get_cached_pokemon_ability_dict,
+                get_cached_item_effect,
+                get_cached_pokemon_item_dict,
+            )
+        except ImportError as e:
+            raise ImportError(
+                "battle_to_prompt_light requires pokechamp installed. "
+                "Run: uv pip install -e vendor/pokechamp"
+            ) from e
+
+        battle_format = getattr(battle, '_format', None) or 'gen9ou'
+        gen_data = poke_env.data.GenData.from_format(battle_format)
+        dynamax_disable = "gen8" not in battle_format
+        sim = LocalSim(
+            battle,
+            get_cached_move_effect(),
+            get_cached_pokemon_move_dict(),
+            get_cached_ability_effect(),
+            get_cached_pokemon_ability_dict(),
+            get_cached_item_effect(),
+            get_cached_pokemon_item_dict(),
+            gen_data,
+            dynamax_disable,
+            format=battle_format,
+            _copy_battle=False,
+        )
+
+        # --- helpers (duplicated simple ones for locality) ---
+        def _hp_pct(mon: Any) -> str:
+            max_hp = mon.max_hp if mon.max_hp != 0 else 1
+            return f"{round(mon.current_hp / max_hp * 100)}%"
+
+        def _type_str(mon: Any) -> str:
+            parts = []
+            if mon.type_1:
+                parts.append(mon.type_1.name.capitalize())
+            if mon.type_2:
+                parts.append(mon.type_2.name.capitalize())
+            return "/".join(parts) if parts else "Unknown"
+
+        def _status_str(mon: Any) -> str:
+            s = sim.check_status(mon.status)
+            return s if s else ""
+
+        def _safe_stats(mon: Any) -> dict:
+            own_stats = getattr(mon, 'stats', None)
+            if own_stats and own_stats.get('atk') is not None:
+                return own_stats
+            try:
+                return mon.calculate_stats(battle_format=battle_format)
+            except Exception:
+                return mon.base_stats
+
+        def _est_dmg(atk_mon: Any, def_mon: Any, move: Any,
+                     atk_stats: dict, def_stats: dict,
+                     atk_boosts: dict, def_boosts: dict) -> int:
+            if move.base_power == 0:
+                return 0
+            cat = getattr(move, 'category', None)
+            cat_name = cat.name if cat else ""
+            if cat_name == "SPECIAL":
+                a = atk_stats.get('spa', 100) * sim.boost_multiplier('spa', atk_boosts.get('spa', 0))
+                d = def_stats.get('spd', 100) * sim.boost_multiplier('spd', def_boosts.get('spd', 0))
+            elif cat_name == "PHYSICAL":
+                a = atk_stats.get('atk', 100) * sim.boost_multiplier('atk', atk_boosts.get('atk', 0))
+                d = def_stats.get('def', 100) * sim.boost_multiplier('def', def_boosts.get('def', 0))
+            else:
+                return 0
+            d = d if d != 0 else 1
+            return round(a / d * move.base_power)
+
+        # --- data collection ---
+        active = battle.active_pokemon
+        opp_active = battle.opponent_active_pokemon
+        active_stats = _safe_stats(active) if active else {}
+        active_boosts = getattr(active, '_boosts', {}) if active else {}
+        opp_stats = _safe_stats(opp_active) if opp_active else {}
+        opp_boosts = getattr(opp_active, '_boosts', {}) if opp_active else {}
+        opp_speed = round(
+            opp_stats.get('spe', 0) * sim.boost_multiplier('spe', opp_boosts.get('spe', 0))
+        ) if opp_active else 0
+        active_speed = round(
+            (active_stats.get('spe', 0) or 0) * sim.boost_multiplier('spe', active_boosts.get('spe', 0))
+        ) if active else 0
+
+        sections = []
+
+        # --- 1. SITUATION ---
+        sit_lines = []
+        if active and not active.fainted:
+            boost_parts = []
+            for stat_key, stat_label in [('atk','Atk'),('def','Def'),('spa','SpA'),('spd','SpD'),('spe','Spe')]:
+                lvl = active_boosts.get(stat_key, 0)
+                if lvl != 0:
+                    boost_parts.append(f"{stat_label}{'+' if lvl > 0 else ''}{lvl}")
+            boost_str = ", " + ", ".join(boost_parts) if boost_parts else ""
+            ability = active.ability or "unknown"
+            item = active.item if active.item and active.item != "unknown_item" else "unknown"
+            speed_cmp = ""
+            if opp_active:
+                speed_cmp = "faster than opponent" if active_speed > opp_speed else "slower than opponent"
+            sit_lines.append(
+                f"Your active: {active.species} ({_type_str(active)}), "
+                f"HP: {_hp_pct(active)}{boost_str}, "
+                f"Ability: {ability}, Item: {item}"
+            )
+            if speed_cmp:
+                sit_lines.append(f"  Speed: {active_speed} ({speed_cmp})")
+
+        if opp_active and not opp_active.fainted:
+            opp_boost_parts = []
+            for stat_key, stat_label in [('atk','Atk'),('def','Def'),('spa','SpA'),('spd','SpD'),('spe','Spe')]:
+                lvl = opp_boosts.get(stat_key, 0)
+                if lvl != 0:
+                    opp_boost_parts.append(f"{stat_label}{'+' if lvl > 0 else ''}{lvl}")
+            opp_boost_str = ", " + ", ".join(opp_boost_parts) if opp_boost_parts else ""
+            opp_ability = opp_active.ability or "unknown"
+            # Revealed moves only
+            revealed = []
+            for m in opp_active.moves.values():
+                revealed.append(m.id)
+            sit_lines.append(
+                f"Opponent active: {opp_active.species} ({_type_str(opp_active)}), "
+                f"HP: {_hp_pct(opp_active)}{opp_boost_str}, "
+                f"Ability: {opp_ability}"
+            )
+            if revealed:
+                sit_lines.append(f"  Revealed moves: {', '.join(revealed)}")
+
+        sections.append("<situation>\n" + "\n".join(sit_lines) + "\n</situation>")
+
+        # --- 2. HP SUMMARY ---
+        hp_lines = []
+        # Your team
+        your_mons = []
+        for mon in battle.team.values():
+            if mon.fainted:
+                your_mons.append(f"{mon.species} FAINTED")
+            else:
+                status = _status_str(mon)
+                status_tag = f" ({status})" if status else ""
+                your_mons.append(f"{mon.species} {_hp_pct(mon)}{status_tag}")
+        hp_lines.append(f"Your team: {', '.join(your_mons)}")
+
+        # Opponent team
+        opp_mons = []
+        for mon in battle.opponent_team.values():
+            if mon.fainted:
+                opp_mons.append(f"{mon.species} FAINTED")
+            else:
+                # Opponent HP may be unknown for unrevealed pokemon
+                if mon.current_hp is None:
+                    opp_mons.append(f"{mon.species} unknown")
+                else:
+                    status = _status_str(mon)
+                    status_tag = f" ({status})" if status else ""
+                    opp_mons.append(f"{mon.species} {_hp_pct(mon)}{status_tag}")
+        # Count unknown opponents
+        revealed_count = len(battle.opponent_team)
+        total_opp = 6  # standard team size
+        unknown_count = total_opp - revealed_count
+        if unknown_count > 0:
+            opp_mons.append(f"{unknown_count} unknown")
+        hp_lines.append(f"Opponent: {', '.join(opp_mons)}")
+
+        sections.append("<hp_summary>\n" + "\n".join(hp_lines) + "\n</hp_summary>")
+
+        # --- 3. FIELD ---
+        from poke_env.environment.side_condition import SideCondition
+
+        field_parts = []
+        # Weather
+        weather = getattr(battle, 'weather', {})
+        if weather:
+            w_name = list(weather.keys())[0].name.lower().replace("_", " ")
+            field_parts.append(f"Weather: {w_name}")
+        else:
+            field_parts.append("Weather: none")
+
+        # Terrain
+        fields = getattr(battle, 'fields', {})
+        if fields:
+            terrain_names = [f.name.lower().replace("_", " ") for f in fields]
+            field_parts.append(f"Terrain: {', '.join(terrain_names)}")
+        else:
+            field_parts.append("Terrain: none")
+
+        field_line = " | ".join(field_parts)
+
+        # Side conditions
+        your_sc = []
+        for sc in battle.side_conditions:
+            name = sc.name.lower().replace("_", " ")
+            if sc == SideCondition.SPIKES:
+                layers = battle.side_conditions.get(sc, 0)
+                name += f" ({layers})" if layers > 1 else ""
+            your_sc.append(name)
+        opp_sc = []
+        for sc in battle.opponent_side_conditions:
+            name = sc.name.lower().replace("_", " ")
+            if sc == SideCondition.SPIKES:
+                layers = battle.opponent_side_conditions.get(sc, 0)
+                name += f" ({layers})" if layers > 1 else ""
+            opp_sc.append(name)
+
+        sc_line = f"Your side: {', '.join(your_sc) if your_sc else 'none'} | Opponent: {', '.join(opp_sc) if opp_sc else 'none'}"
+
+        sections.append(f"<field>\n{field_line}\n{sc_line}\n</field>")
+
+        # --- 4. AVAILABLE ACTIONS ---
+        act_lines = []
+        if battle.available_moves:
+            move_parts = []
+            for move in battle.available_moves:
+                type_name = move.type.name.capitalize()
+                if move.base_power > 0 and opp_active:
+                    dmg = _est_dmg(active, opp_active, move, active_stats, opp_stats, active_boosts, opp_boosts)
+                    acc = round(move.accuracy * sim.boost_multiplier('accuracy', active_boosts.get('accuracy', 0)) * 100)
+                    move_parts.append(f"{move.id} ({type_name}, ~{dmg}dmg, {acc}%)")
+                elif move.base_power > 0:
+                    move_parts.append(f"{move.id} ({type_name}, BP:{move.base_power})")
+                else:
+                    move_parts.append(f"{move.id} ({type_name}, status)")
+            act_lines.append(f"Moves: {', '.join(move_parts)}")
+
+        if battle.available_switches:
+            switch_parts = []
+            for mon in battle.available_switches:
+                switch_parts.append(f"{mon.species} ({_type_str(mon)}, {_hp_pct(mon)})")
+            act_lines.append(f"Switches: {', '.join(switch_parts)}")
+
+        sections.append("<available_actions>\n" + "\n".join(act_lines) + "\n</available_actions>")
+
+        # --- Trailing instruction ---
+        content = "\n\n".join(sections) + "\n\nAnalyze the situation and reason about the best action."
+
+        return {"role": "user", "content": content}
+
+    def extraction_prompt(self, battle: Any) -> dict[str, str]:
+        """Extraction prompt for interleaved trajectory mode.
+
+        Returns a short prompt asking the model to output its action as JSON.
+        Adapts format based on whether a force-switch is needed.
+
+        Returns:
+            Single message dict: {"role": "user", "content": ...}
+        """
+        if battle.active_pokemon.fainted or len(battle.available_moves) == 0:
+            content = 'Now output your switch choice as JSON: {"switch": "<name>"}. No other text.'
+        else:
+            content = 'Now output your chosen action as JSON. Use {"move": "<name>"} or {"switch": "<name>"}. No other text.'
+
+        return {"role": "user", "content": content}
+
     def _simple_prompt(self, battle: Any) -> list[dict[str, str]]:
         """Minimal text prompt — no pokechamp dependency.
 

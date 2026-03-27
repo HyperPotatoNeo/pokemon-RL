@@ -1,0 +1,62 @@
+# Interleaved trajectory: Qwen 4B vs abyssal heuristic.
+# Two-phase response: reasoning (512 tokens) + extraction (50 tokens).
+# Full conversation = 1 TrainingSample via interleave_rollout.
+# seq_len=32768 to fit ~25-turn conversations.
+#
+# Launch: sbatch local_scripts/launch_interleaved.sh
+max_steps = 600
+seq_len = 32768
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+[wandb]
+project = "pokemon-rl"
+name = "interleaved-vs-abyssal"
+
+[orchestrator]
+batch_size = 64
+rollouts_per_example = 64
+trajectory_strategy = "interleaved"
+
+[orchestrator.client]
+base_url = ["http://__INFER_1__:8001/v1", "http://__INFER_2__:8001/v1"]
+
+[orchestrator.sampling]
+max_tokens = 512
+temperature = 1.0
+
+[[orchestrator.env]]
+id = "pokemon_rl"
+name = "pokemon-interleaved"
+
+[orchestrator.env.args]
+battle_format = "gen9ou"
+play_mode = "single"
+opponent_type = "abyssal"
+port = 8000
+observation_format = "full_obs_cot"
+reward_win = 1.0
+reward_loss = 0.0
+reward_draw = 0.0
+max_game_turns = 200
+num_battles = 10000
+team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
+max_concurrent_battles = 64
+interleaved = true
+reasoning_tokens = 512
+extraction_tokens = 50
+
+[trainer.model]
+attn = "flash_attention_2"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+lr = 3e-6
+betas1 = 0.9
+betas2 = 0.9
+
+[ckpt]
+interval = 25
