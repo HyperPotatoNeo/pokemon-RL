@@ -213,6 +213,9 @@ class PokemonBattleEnv(_EnvBase):
         reward_draw: Terminal reward for draws/truncations (default 0.0)
         step_reward_fn: Optional per-step callback:
             (battle_before, battle_after, action, agent_idx) -> float
+        bad_step_penalty: Reward added to steps with parse failures or
+            truncation (hit max_tokens). Use negative values (e.g., -1.0)
+            to penalize. Only affects the specific failing step.
         max_game_turns: Max game turns before truncation
         num_battles: Dataset size (number of battle placeholders)
     """
@@ -223,9 +226,9 @@ class PokemonBattleEnv(_EnvBase):
     _KNOWN_KWARGS = frozenset({
         "battle_format", "port", "server_host", "play_mode", "opponent_type",
         "observation_format", "system_prompt", "reward_win", "reward_loss",
-        "reward_draw", "step_reward_fn", "max_game_turns", "num_battles",
-        "team_dir", "team_fn", "score_rollouts", "max_concurrent_battles",
-        "llm_opponent_kwargs",
+        "reward_draw", "step_reward_fn", "bad_step_penalty", "max_game_turns",
+        "num_battles", "team_dir", "team_fn", "score_rollouts",
+        "max_concurrent_battles", "llm_opponent_kwargs",
     })
 
     def __init__(
@@ -241,6 +244,7 @@ class PokemonBattleEnv(_EnvBase):
         reward_loss: float = 0.0,
         reward_draw: float = 0.0,  # deliberately same as loss — no draw exploitation
         step_reward_fn: Callable | None = None,
+        bad_step_penalty: float = 0.0,
         max_game_turns: int = 200,
         num_battles: int = 1000,
         max_concurrent_battles: int = 8,
@@ -281,6 +285,7 @@ class PokemonBattleEnv(_EnvBase):
         self.reward_loss = reward_loss
         self.reward_draw = reward_draw
         self.step_reward_fn = step_reward_fn
+        self.bad_step_penalty = bad_step_penalty
         self.max_game_turns = max_game_turns
         self.max_concurrent_battles = max_concurrent_battles
         self.llm_opponent_kwargs = llm_opponent_kwargs
@@ -724,18 +729,12 @@ class PokemonBattleEnv(_EnvBase):
         self._assign_rewards(state)
 
         trajectory = state["trajectory"]
-        # State-level reward: use P0's perspective (consistent with state["won"])
-        if trajectory:
-            p0_steps = [
-                s for s in trajectory
-                if s.get("extras", {}).get("agent_idx", 0) == 0
-            ]
-            state["reward"] = (
-                p0_steps[0]["reward"] if p0_steps
-                else self._compute_terminal_reward(state.get("won"))
-            )
-        else:
-            state["reward"] = 0.0
+        # State-level reward: pure terminal reward (no step penalties).
+        # Step-level penalties (bad_step_penalty, step_reward_fn) live only in
+        # step["reward"] for per-step gradient weighting. The state-level reward
+        # feeds the orchestrator's batch advantage computation and must reflect
+        # the true game outcome, not a penalty on an arbitrary step.
+        state["reward"] = self._compute_terminal_reward(state.get("won"))
         state["completion"] = (
             trajectory[-1]["completion"] if trajectory else []
         )
@@ -816,6 +815,16 @@ class PokemonBattleEnv(_EnvBase):
             step_r = step.get("extras", {}).get("step_reward")
             if step_r is not None:
                 step["reward"] += step_r
+
+        # --- Penalize truncated / parse-failed steps ---
+        if self.bad_step_penalty:
+            for step in trajectory:
+                is_bad = (
+                    step.get("extras", {}).get("parse_failed")
+                    or (step.get("tokens") or {}).get("is_truncated")
+                )
+                if is_bad:
+                    step["reward"] += self.bad_step_penalty
 
         # --- Per-step advantages (only when rewards are non-uniform) ---
         rewards = [s["reward"] for s in trajectory]
