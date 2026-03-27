@@ -4,7 +4,7 @@
 # Usage:
 #   bash scripts/launch_rl.sh [config_file]
 #
-# Default config: configs/pokemon/rl_selfplay.toml
+# Default config: configs/pokemon/rl_test.toml
 #
 # This script:
 #   1. Starts Pokemon Showdown in the background
@@ -25,7 +25,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 POKEMON_RL_DIR="${POKEMON_RL_DIR:-$(dirname "$SCRIPT_DIR")}"
 PRIME_RL_DIR="${PRIME_RL_DIR:-$(dirname "$POKEMON_RL_DIR")/prime-rl}"
-CONFIG="${1:-$POKEMON_RL_DIR/configs/pokemon/rl_selfplay.toml}"
+CONFIG="${1:-$POKEMON_RL_DIR/configs/pokemon/rl_test.toml}"
 NODE_BIN="${NODE_BIN:-node}"
 SHOWDOWN_PORT="${SHOWDOWN_PORT:-8000}"
 SHOWDOWN_PATH="${SHOWDOWN_PATH:-$POKEMON_RL_DIR/vendor/pokechamp/pokemon-showdown/pokemon-showdown}"

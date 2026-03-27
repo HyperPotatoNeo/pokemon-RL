@@ -1,0 +1,18 @@
+# Standalone inference config for interleaved trajectory training.
+# Run with: CUDA_VISIBLE_DEVICES=0,1,2,3 uv run inference @ inference_interleaved.toml
+# DP=4 for 4 GPUs. Prefix caching enabled via vLLM engine args.
+# max_model_len=32768 to support long interleaved conversations.
+
+seed = 0
+
+[server]
+host = "0.0.0.0"
+port = 8001
+
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+max_model_len = 32768
+
+[parallel]
+dp = 4
+tp = 1

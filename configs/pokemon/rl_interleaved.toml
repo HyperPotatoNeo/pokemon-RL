@@ -1,62 +1,89 @@
-# Interleaved trajectory: Qwen 4B vs abyssal heuristic.
-# Two-phase response: reasoning (512 tokens) + extraction (50 tokens).
-# Full conversation = 1 TrainingSample via interleave_rollout.
-# seq_len=32768 to fit ~25-turn conversations.
+# Interleaved Trajectory: Qwen 4B vs abyssal heuristic
 #
-# Launch: sbatch local_scripts/launch_interleaved.sh
-max_steps = 600
-seq_len = 32768
+# This config uses the "interleaved" trajectory strategy, where the full
+# multi-turn conversation becomes ONE TrainingSample (via interleave_rollout).
+# Each game turn produces two LLM calls:
+#   1. Reasoning phase (512 tokens) -- think through the battle state
+#   2. Extraction phase (50 tokens)  -- output a JSON action
+#
+# Turn 1 gets a comprehensive prompt (~2600 tokens); subsequent turns get
+# a lighter prompt (~500 tokens) that leverages the accumulated conversation.
+# vLLM's Automatic Prefix Caching reuses KV entries across turns, giving
+# O(N) compute instead of O(N^2).
+#
+# Token budget: ~25 turns * (512+50) reasoning + ~500 prompt/turn = ~17-20K
+# tokens per sample.  seq_len=32768 provides comfortable headroom.
+#
+# Launch:  bash scripts/launch_interleaved.sh configs/pokemon/rl_interleaved.toml
+#          (or any launcher that resolves __INFER_1__ placeholders)
 
+# -- Training loop --------------------------------------------------------
+max_steps = 600                     # Total GRPO training steps
+seq_len = 32768                     # Max sequence length (must fit full conversation)
+
+# -- Model -----------------------------------------------------------------
 [model]
 name = "Qwen/Qwen3-4B-Instruct-2507"
 
+# -- Logging ---------------------------------------------------------------
 [wandb]
 project = "pokemon-rl"
 name = "interleaved-vs-abyssal"
 
+# -- Orchestrator ----------------------------------------------------------
 [orchestrator]
-batch_size = 64
-rollouts_per_example = 64
-trajectory_strategy = "interleaved"
+batch_size = 64                     # Games per training step
+rollouts_per_example = 64           # Must equal batch_size (batch-level GRPO)
+trajectory_strategy = "interleaved" # Full conversation = 1 TrainingSample
 
 [orchestrator.client]
-base_url = ["http://__INFER_1__:8001/v1", "http://__INFER_2__:8001/v1"]
+# Single inference node placeholder.  Launch scripts resolve __INFER_1__
+# to the actual hostname at runtime.
+base_url = ["http://__INFER_1__:8001/v1"]
 
 [orchestrator.sampling]
-max_tokens = 512
-temperature = 1.0
+max_tokens = 512                    # Matches reasoning_tokens below; env overrides per-phase
+temperature = 1.0                   # Standard exploration temperature
 
+# -- Environment -----------------------------------------------------------
 [[orchestrator.env]]
-id = "pokemon_rl"
+id = "pokemon_rl"                   # Registered via load_environment()
 name = "pokemon-interleaved"
 
 [orchestrator.env.args]
-battle_format = "gen9ou"
-play_mode = "single"
-opponent_type = "abyssal"
-port = 8000
-observation_format = "full_obs_cot"
-reward_win = 1.0
+battle_format = "gen9ou"            # Competitive OU format
+play_mode = "single"                # Single agent trains; opponent is heuristic
+opponent_type = "abyssal"           # Strong heuristic with type/switch logic
+port = 8000                         # Showdown server port
+observation_format = "full_obs_cot" # Full observation with chain-of-thought
+reward_win = 1.0                    # Binary win/loss rewards
 reward_loss = 0.0
-reward_draw = 0.0
-max_game_turns = 200
-num_battles = 10000
+reward_draw = 0.0                   # Draws treated as losses (prevents stalling)
+max_game_turns = 200                # Truncation limit
+num_battles = 10000                 # Total battles before env exhausts
 team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
-max_concurrent_battles = 64
-interleaved = true
-reasoning_tokens = 512
-extraction_tokens = 50
+max_concurrent_battles = 64         # Match batch_size for full parallelism
 
+# Interleaved-specific settings:
+interleaved = true                  # Enable two-phase interleaved generation
+reasoning_tokens = 512              # Token budget for reasoning phase per turn
+extraction_tokens = 50              # Token budget for JSON extraction phase
+
+# -- Trainer ---------------------------------------------------------------
 [trainer.model]
-attn = "flash_attention_2"
+attn = "flash_attention_2"          # FlashAttention-2 for long sequences
 
 [trainer.model.ac]
-freq = 1
+freq = 1                            # Gradient checkpointing (prevents OOM)
 
 [trainer.optim]
-lr = 3e-6
-betas1 = 0.9
-betas2 = 0.9
+lr = 3e-6                           # Learning rate
+betas1 = 0.9                        # AdamW beta1
+betas2 = 0.9                        # AdamW beta2 (lower than default 0.999)
 
+# -- Checkpointing --------------------------------------------------------
 [ckpt]
-interval = 25
+interval = 25                       # Checkpoint every 25 steps
+
+# No [inference] section — inference started externally (vLLM with --enable-prefix-caching).
+# The launch scripts handle vLLM startup.

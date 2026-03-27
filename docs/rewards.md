@@ -88,6 +88,14 @@ Truncation occurs when `state["game_turn"] >= max_game_turns` (default 200). The
 
 `wins`, `losses`, `draws` are separately logged to W&B, making it easy to track win rates directly without decoding the ternary `won` field.
 
+## Rewards in Interleaved Mode
+
+In interleaved mode (`trajectory_strategy = "interleaved"`), the full conversation becomes one TrainingSample via `interleave_rollout`. This has implications for how rewards work:
+
+- **Per-step rewards are cosmetic**: `interleave_rollout` ignores individual step rewards. Only the state-level terminal reward (`state["reward"]`) matters for training. Step rewards are still computed and logged for monitoring, but they do not affect the training gradient.
+- **`bad_step_penalty`**: If configured, the penalty is guarded for interleaved mode. Since per-step rewards are discarded by `interleave_rollout`, step-level penalties would have no training effect and could produce misleading logs.
+- **Terminal reward is the training signal**: The win/loss/draw reward assigned by `_compute_terminal_reward` is what the trainer sees for the entire conversation.
+
 ## Step-Level Rewards
 
 Optional per-step reward callback for credit assignment and reward shaping.

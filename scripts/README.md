@@ -11,6 +11,7 @@ sensible defaults — override them for your cluster environment.
 | `setup_node_hostnet.sh` | Like setup_node but with host networking (for multi-node) |
 | `run_tests.sh` | Run pytest inside the project venv |
 | `launch_rl.sh` | Start Showdown + install deps + run RL training |
+| `launch_interleaved.sh` | Start Showdown + vLLM + run interleaved trajectory RL training |
 | `launch_eval.sh` | Start Showdown + agent vLLM + run eval runner |
 
 ## Environment Variables
@@ -55,11 +56,11 @@ REMOTE_NODE=other-hostname \
 bash scripts/launch_rl.sh
 
 # Specific config:
-bash scripts/launch_rl.sh configs/pokemon/rl_vs_heuristic.toml
+bash scripts/launch_rl.sh configs/pokemon/rl_interleaved.toml
 
 # Custom paths:
 PRIME_RL_DIR=/path/to/prime-rl NODE_BIN=/usr/bin/node \
-  bash scripts/launch_rl.sh configs/pokemon/rl_selfplay.toml
+  bash scripts/launch_rl.sh configs/pokemon/rl_test.toml
 ```
 
 See [docs/rl_training.md](../docs/rl_training.md) for full configuration reference.

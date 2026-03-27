@@ -131,25 +131,28 @@ Train LLMs to play Pokemon via GRPO with prime-rl integration.
 
 ```bash
 # Generic launch (inside prime-rl environment):
-bash scripts/launch_rl.sh configs/pokemon/rl_selfplay.toml
+bash scripts/launch_rl.sh configs/pokemon/rl_test.toml
 
 # Or manually (from prime-rl directory):
 cd /path/to/prime-rl && source .venv/bin/activate
 pip install -e /path/to/pokemon-rl/vendor/pokechamp
 pip install -e /path/to/pokemon-rl
 ln -sfn /path/to/pokemon-rl/vendor/pokechamp/poke_env poke_env  # required: pokechamp data cache
-rl @ /path/to/pokemon-rl/configs/pokemon/rl_selfplay.toml
+rl @ /path/to/pokemon-rl/configs/pokemon/rl_test.toml
 ```
 
 ### Configs
 
-| Config | Mode | Description |
-|--------|------|-------------|
-| `rl_selfplay.toml` | self_play | Production self-play training (gen9ou) |
-| `rl_vs_heuristic.toml` | single | Production vs heuristic bot (gen9ou, default: max_damage) |
-| `rl_test.toml` | self_play | Integration testing (3 steps, batch=4) |
+| Config | Mode | Strategy | Description |
+|--------|------|----------|-------------|
+| `rl_interleaved.toml` | single | interleaved | Production vs abyssal, full-conversation training (gen9ou, batch=64, seq_len=32K) |
+| `rl_vs_abyssal_600_4x4.toml` | single | branching | Production vs abyssal, per-turn training (gen9ou, multi-node) |
+| `rl_test.toml` | self_play | branching | Integration testing (3 steps, batch=4) |
+| `inference_interleaved.toml` | -- | -- | Standalone inference for interleaved (DP=4, 32K context, prefix caching) |
 
-**Critical**: All configs set `trajectory_strategy = "branching"`. Each turn becomes a separate TrainingSample. Do not remove this.
+**Critical**: Every config must set `trajectory_strategy` explicitly:
+- `"branching"` -- each turn becomes a separate TrainingSample (used for self-play and short-sequence training).
+- `"interleaved"` -- the full conversation becomes one TrainingSample via `interleave_rollout`. Two LLM calls per turn (reasoning + extraction), lighter prompts after turn 1. Requires `interleaved=true` in env args and `seq_len=32768`. See [docs/rl_training.md](docs/rl_training.md) for the full comparison.
 
 See [docs/rl_training.md](docs/rl_training.md) for the full RL training guide: config reference, prompt construction, launching, and architecture.
 
@@ -214,7 +217,7 @@ See [docs/eval_testing_protocol.md](docs/eval_testing_protocol.md) for the full 
 
 ## Project Status
 
-**Phase 5 RL training + eval feature complete.** 340 tests passing (unit + integration + GPU). Production training active (Qwen3-4B vs abyssal, 2 nodes). Eval framework supports heuristic, metamon, and LLM-vs-LLM opponents with per-opponent statistics.
+**Phase 5 RL training + eval feature complete. Interleaved trajectory validated.** 400 tests passing (352 existing + 48 interleaved). Production training active (Qwen3-4B vs abyssal, 2 nodes). Interleaved mode: full-conversation training with two-phase LLM calls, entropy declining after 4 steps. Eval framework supports heuristic, metamon, and LLM-vs-LLM opponents with per-opponent statistics.
 
 See [PROGRESS.md](PROGRESS.md) for changelog and [TODO.md](TODO.md) for roadmap.
 

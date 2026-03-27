@@ -116,12 +116,13 @@ Key files: `src/pokemon_rl/eval/{config,llm_player,runner,report}.py`,
 
 ## Current Status
 
-Phase 5 RL training + eval feature complete. Multi-node production training active.
-340 tests passing (298 existing + 42 eval). Production run: Qwen3-4B vs abyssal, batch_size=128, 600 steps, 2 nodes.
+Phase 5 RL training + eval feature complete. Interleaved trajectory feature complete and validated.
+400 tests passing (352 existing + 48 interleaved). Production run: 4 steps completed on 2-node setup with interleaved mode (entropy declining, seq lengths 17-19.5K).
 
 Key details:
 - pokechamp_io prompts include CoT constraint: forces 3-sentence reasoning inside JSON
-- `trajectory_strategy = "branching"` — each turn = separate TrainingSample (CRITICAL)
+- `trajectory_strategy`: `"branching"` (each turn = separate sample) or `"interleaved"` (full conversation = 1 sample)
+- Interleaved: two-phase per turn (reasoning 512 tokens + extraction 50 tokens), lighter prompts after turn 1
 - `rollouts_per_example = batch_size` — batch-level GRPO normalization
 - `[inference.server] port = 8001` — must differ from Showdown port 8000
 - `[trainer.model.ac] freq = 1` — gradient checkpointing prevents OOM on single GPU
@@ -132,13 +133,13 @@ Key details:
 Performance optimizations (cumulative):
 - `_copy_battle=False` in LocalSim: eliminates deepcopy, **11x speedup** (69 min/step to 6.4 min/step)
 - Mutation fix in `vendor/pokechamp/pokechamp/prompts.py`: local `max_hp` var instead of `pokemon._max_hp = 1`
-- `asyncio.to_thread` in `get_prompt_messages`: offloads CPU-bound prompt building to thread pool
+- `asyncio.to_thread` in `get_prompt_messages`: considered but not yet implemented
 - Metrics: `wins`, `losses`, `draws` logged separately to W&B
 
 Multi-node (2-node):
 - Node 1: inference DP=4 (standalone, `configs/pokemon/inference_node1.toml`)
 - Node 2: inference DP=2 + trainer (2 GPUs) + Showdown + orchestrator
-- Launch: `sbatch local_scripts/launch_2node_prod.sh configs/pokemon/rl_vs_abyssal_600.toml`
+- Launch: `sbatch local_scripts/launch_2node_prod.sh configs/pokemon/rl_vs_abyssal_600_4x4.toml`
 - Step time: ~6-7 min with batch_size=128
 
 See `docs/rl_training.md` for the full training guide.

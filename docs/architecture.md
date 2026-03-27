@@ -81,6 +81,22 @@ One player controlled externally, opponent auto-responds.
    └─ Writes metrics dict to state
 ```
 
+### Interleaved Mode Variation
+
+When `interleaved=true`, the hook sequence changes. Each game turn triggers two LLM calls instead of one:
+
+```
+Per turn (interleaved):
+  get_prompt_messages  → reasoning prompt (or lightweight follow-up for turn > 1)
+  [LLM call: reasoning_tokens budget]
+  add_trajectory_step  → records reasoning, builds extraction prompt
+  get_prompt_messages  → extraction prompt ("Output JSON action:")
+  [LLM call: extraction_tokens budget]
+  add_trajectory_step  → parses JSON, executes action, advances game
+```
+
+The conversation accumulates per-agent across turns. At game end, `interleave_rollout` merges the full conversation into one TrainingSample (instead of branching each turn into a separate sample). Per-agent conversation accumulation supports both single-agent and self-play modes.
+
 ## Data Flow: Self-Play Mode
 
 Both players controlled externally. See [selfplay.md](selfplay.md) for details.
