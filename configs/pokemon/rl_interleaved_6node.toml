@@ -1,26 +1,22 @@
-# Interleaved Trajectory: Qwen 4B vs abyssal heuristic
+# Interleaved Trajectory: Qwen 4B vs abyssal — 6-node (3 infer + 3 train)
 #
-# This config uses the "interleaved" trajectory strategy, where the full
-# multi-turn conversation becomes ONE TrainingSample (via interleave_rollout).
-# Each game turn produces two LLM calls:
-#   1. Reasoning phase (512 tokens) -- think through the battle state
-#   2. Extraction phase (50 tokens)  -- output a JSON action
+# 3+3 split:
+#   Nodes 0-2: inference (DP=4 each = DP=12 total, vLLM with prefix caching)
+#   Node 3:    trainer rank 0 (4 GPUs) + orchestrator + Showdown
+#   Nodes 4-5: trainer ranks 1-2 (4 GPUs each)
+#   Total: 12 inference GPUs, 12 trainer GPUs (FSDP)
 #
-# Turn 1 gets a comprehensive prompt (~2600 tokens); subsequent turns get
-# a lighter prompt (~500 tokens) that leverages the accumulated conversation.
-# vLLM's Automatic Prefix Caching reuses KV entries across turns, giving
-# O(N) compute instead of O(N^2).
+# Interleaved: each game turn produces two LLM calls (reasoning 512 + extraction 50).
+# Full conversation = one TrainingSample via interleave_rollout.
+# Token budget: ~25 turns * (512+50) + ~500 prompt/turn = ~17-20K per sample.
+# seq_len=32768 provides headroom.
 #
-# Token budget: ~25 turns * (512+50) reasoning + ~500 prompt/turn = ~17-20K
-# tokens per sample.  seq_len=32768 provides comfortable headroom.
-#
-# Launch:  bash scripts/launch_interleaved.sh configs/pokemon/rl_interleaved.toml
-#          (or any launcher that resolves __INFER_1__ placeholders)
+# Launch: sbatch local_scripts/launch_6node_interleaved.sh
+# NOTE: __INFER_N__ placeholders replaced at launch time with actual hostnames.
 
 # -- Training loop --------------------------------------------------------
 max_steps = 600                     # Total GRPO training steps
 seq_len = 32768                     # Max sequence length (must fit full conversation)
-trainer_gpu_ids = [0, 1, 2, 3]      # All 4 GPUs for training (no local inference)
 
 # -- Model -----------------------------------------------------------------
 [model]
@@ -29,27 +25,27 @@ name = "Qwen/Qwen3-4B-Instruct-2507"
 # -- Logging ---------------------------------------------------------------
 [wandb]
 project = "pokemon-rl"
-name = "interleaved-vs-abyssal"
+name = "interleaved-vs-abyssal-6node-128"
 
 # -- Orchestrator ----------------------------------------------------------
 [orchestrator]
-batch_size = 64                     # Games per training step
-rollouts_per_example = 64           # Must equal batch_size (batch-level GRPO)
+batch_size = 128                    # Games per training step
+rollouts_per_example = 128          # Must equal batch_size (batch-level GRPO)
 trajectory_strategy = "interleaved" # Full conversation = 1 TrainingSample
 
 [orchestrator.client]
-# Single inference node placeholder.  Launch scripts resolve __INFER_1__
-# to the actual hostname at runtime.
-base_url = ["http://__INFER_1__:8001/v1"]
+# 3 inference nodes (DP=4 each = DP=12 total, prefix caching).
+# __INFER_N__ replaced at launch time.
+base_url = ["http://__INFER_1__:8001/v1", "http://__INFER_2__:8001/v1", "http://__INFER_3__:8001/v1"]
 
 [orchestrator.sampling]
-max_tokens = 512                    # Matches reasoning_tokens below; env overrides per-phase
+max_tokens = 512                    # Matches reasoning_tokens; env overrides per-phase
 temperature = 1.0                   # Standard exploration temperature
 
 # -- Environment -----------------------------------------------------------
 [[orchestrator.env]]
 id = "pokemon_rl"                   # Registered via load_environment()
-name = "pokemon-interleaved"
+name = "pokemon-interleaved-6node"
 
 [orchestrator.env.args]
 battle_format = "gen9ou"            # Competitive OU format
@@ -57,13 +53,13 @@ play_mode = "single"                # Single agent trains; opponent is heuristic
 opponent_type = "abyssal"           # Strong heuristic with type/switch logic
 port = 8000                         # Showdown server port
 observation_format = "full_obs_cot" # Full observation with chain-of-thought
-reward_win = 1.0                    # Binary win/loss rewards
+reward_win = 1.0                    # Binary win/loss rewards (terminal only)
 reward_loss = 0.0
 reward_draw = 0.0                   # Draws treated as losses (prevents stalling)
 max_game_turns = 200                # Truncation limit
 num_battles = 10000                 # Total battles before env exhausts
 team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
-max_concurrent_battles = 64         # Match batch_size for full parallelism
+max_concurrent_battles = 128        # Match batch_size for full parallelism
 
 # Interleaved-specific settings:
 interleaved = true                  # Enable two-phase interleaved generation
@@ -86,5 +82,5 @@ betas2 = 0.9                        # AdamW beta2 (lower than default 0.999)
 [ckpt]
 interval = 25                       # Checkpoint every 25 steps
 
-# No [inference] section — inference started externally (vLLM with --enable-prefix-caching).
-# The launch scripts handle vLLM startup.
+# No [inference] section — all inference on external nodes with prefix caching.
+# Trainer uses 12 GPUs across 3 nodes (FSDP12).

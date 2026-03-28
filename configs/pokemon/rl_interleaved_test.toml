@@ -1,0 +1,79 @@
+# Interleaved Trajectory TEST: Qwen 4B vs abyssal — 2-node quick validation
+#
+# 2-node layout:
+#   Node 0: inference (DP=4, vLLM with prefix caching)
+#   Node 1: trainer (4 GPUs FSDP) + orchestrator + Showdown
+#
+# Reduced batch_size=32 and max_steps=5 for quick validation.
+# Verifies the interleaved flow works end-to-end in 3-4 orch steps.
+#
+# Launch: bash local_scripts/test_interleaved_2node.sh (from salloc session)
+
+# -- Training loop --------------------------------------------------------
+max_steps = 5                       # Quick test: just 3-4 orch steps
+seq_len = 32768                     # Same as production
+trainer_gpu_ids = [0, 1, 2, 3]      # All 4 GPUs for training (no local inference)
+
+# -- Model -----------------------------------------------------------------
+[model]
+name = "Qwen/Qwen3-4B-Instruct-2507"
+
+# -- Logging ---------------------------------------------------------------
+[wandb]
+project = "pokemon-rl"
+name = "interleaved-test"
+
+# -- Orchestrator ----------------------------------------------------------
+[orchestrator]
+batch_size = 32                     # Reduced for 2-node test
+rollouts_per_example = 32           # Must equal batch_size
+trajectory_strategy = "interleaved"
+
+[orchestrator.client]
+base_url = ["http://__INFER_1__:8001/v1"]
+
+[orchestrator.sampling]
+max_tokens = 512                    # Matches reasoning_tokens; env overrides per-phase
+temperature = 1.0
+
+# -- Environment -----------------------------------------------------------
+[[orchestrator.env]]
+id = "pokemon_rl"
+name = "pokemon-interleaved-test"
+
+[orchestrator.env.args]
+battle_format = "gen9ou"
+play_mode = "single"
+opponent_type = "abyssal"
+port = 8000
+observation_format = "full_obs_cot"
+reward_win = 1.0
+reward_loss = 0.0
+reward_draw = 0.0
+max_game_turns = 200
+num_battles = 10000
+team_dir = "vendor/pokechamp/poke_env/data/static/teams/gen9ou"
+max_concurrent_battles = 32         # Match batch_size
+
+# Interleaved-specific:
+interleaved = true
+reasoning_tokens = 512
+extraction_tokens = 50
+
+# -- Trainer ---------------------------------------------------------------
+[trainer.model]
+attn = "flash_attention_2"
+
+[trainer.model.ac]
+freq = 1
+
+[trainer.optim]
+lr = 3e-6
+betas1 = 0.9
+betas2 = 0.9
+
+# -- Checkpointing --------------------------------------------------------
+[ckpt]
+interval = 25
+
+# No [inference] section — inference on separate node with prefix caching.
